@@ -1,0 +1,7 @@
+*.o
+*.cmd
+*.ko
+Module.symvers
+modules.order
+edgx_lkm.mod
+edgx_lkm.mod.c
