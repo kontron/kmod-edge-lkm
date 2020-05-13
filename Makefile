@@ -40,7 +40,6 @@ $(edge_lkm_mod)-objs := \
 		   edge_fqtss.o              \
 		   edge_br_sid.o             \
 		   edge_frer.o               \
-		   altera_pio.o              \
 		   edge_mdio.o               \
 		   edge_port.o               \
 		   edge_time.o               \
@@ -51,6 +50,10 @@ endif
 
 ifeq ($(target),pcie)
 $(edge_lkm_mod)-objs += edge_pcie.o
+endif
+
+ifdef CONFIG_GPIOLIB
+$(edge_lkm_mod)-objs += altera_pio.o
 endif
 
 all :

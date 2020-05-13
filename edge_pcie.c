@@ -42,10 +42,10 @@
 #define SUBVENDOR_ID		(0x1c7e)
 #define SUBDEVICE_ID		(0x132)
 #define EDGX_PCI_BR_BAR		(0U)
-#define EDGX_PCI_BR_OFFS	(0x6000000)
+#define EDGX_PCI_BR_OFFS	(0x2000000)
 #define EDGX_PCI_BR_SIZE	(0x1ffffff)
-#define EDGX_PCI_MDIO_BAR	(1U)
-#define EDGX_PCI_MDIO_OFFS	(0x0)
+#define EDGX_PCI_MDIO_BAR	(0U)
+#define EDGX_PCI_MDIO_OFFS	(0x4000000)
 #define EDGX_PCI_MDIO_SIZE	(0x3ff)
 #define EDGX_PCI_PIO_BAR	(2U)
 #define EDGX_PCI_PIO_OFFS	(0xf0f00)
@@ -59,7 +59,7 @@ struct edgx_pci_drv {
 
 static const struct pci_device_id edgx_pci_ids[] =
 {
-	{PCI_DEVICE_SUB(VENDOR_ID, DEVICE_ID, SUBVENDOR_ID, SUBDEVICE_ID)},
+	{PCI_DEVICE(0x1059, 0xa100)},
 	{}
 };
 
@@ -106,24 +106,6 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	else
 		irqbase = pdev->irq;
 
-	if (!(pci_resource_flags(pdev, 0) & IORESOURCE_MEM)) {
-		dev_err(&pdev->dev, "Invalid BAR0 resource flags.\n");
-		ret = -ENODEV;
-		goto probe_out_res_flag;
-	}
-
-	if (!(pci_resource_flags(pdev, 1) & IORESOURCE_MEM)) {
-		dev_err(&pdev->dev, "Invalid BAR1 resource flags.\n");
-		ret = -ENODEV;
-		goto probe_out_res_flag;
-	}
-
-	if (!(pci_resource_flags(pdev, 2) & IORESOURCE_MEM)) {
-		dev_err(&pdev->dev, "Invalid BAR2 resource flags.\n");
-		ret = -ENODEV;
-		goto probe_out_res_flag;
-	}
-
 	ret = pci_request_regions(pdev, DRV_NAME);
 	if (ret) {
 		dev_err(&pdev->dev, "Cannot get PCI resource.\n");
@@ -156,12 +138,14 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto probe_out_iomap_mdio;
 	}
 
-	pio_base = pci_iomap_range(pdev, EDGX_PCI_PIO_BAR,
-				   EDGX_PCI_PIO_OFFS, EDGX_PCI_PIO_SIZE);
-	if (!pio_base) {
-		dev_err(&pdev->dev, "Cannot map PIO device memory.\n");
-		ret = -ENOMEM;
-		goto probe_out_iomap_pio;
+	if (IS_ENABLED(CONFIG_GPIOLIB)) {
+		pio_base = pci_iomap_range(pdev, EDGX_PCI_PIO_BAR,
+					   EDGX_PCI_PIO_OFFS, EDGX_PCI_PIO_SIZE);
+		if (!pio_base) {
+			dev_err(&pdev->dev, "Cannot map PIO device memory.\n");
+			ret = -ENOMEM;
+			goto probe_out_iomap_pio;
+		}
 	}
 
 	pci_drv = kzalloc(sizeof(*pci_drv), GFP_KERNEL);
@@ -170,12 +154,14 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto probe_out_drv_alloc;
 	}
 
-	ret = flx_pio_probe_one(pio_id, &pdev->dev, pio_base,
-				&pci_drv->pio);
-	if (ret) {
-		goto probe_out_pio;
+	if (IS_ENABLED(CONFIG_GPIOLIB)) {
+		ret = flx_pio_probe_one(pio_id, &pdev->dev, pio_base,
+					&pci_drv->pio);
+		if (ret) {
+			goto probe_out_pio;
+		}
+		pio_id++;
 	}
-	pio_id++;
 
 	ret = edgx_mdio_probe_one(mdio_id, &pdev->dev, mdio_base,
 				  &pci_drv->mdio);
@@ -195,7 +181,7 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	mdio_bus_id = edgx_mdio_get_id(pci_drv->mdio);
 
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < 3; i++) {
 		pt =  edgx_br_get_brpt(pci_drv->br, i + 1);
 		if (!pt) {
 			dev_err(&pdev->dev, "Cannot get port %d.\n", i + 1);
@@ -227,11 +213,13 @@ probe_out_link:
 probe_out_bridge:
 	edgx_mdio_shutdown(pci_drv->mdio);
 probe_out_mdio:
-	flx_pio_shutdown(pci_drv->pio);
+	if (IS_ENABLED(CONFIG_GPIOLIB))
+		flx_pio_shutdown(pci_drv->pio);
 probe_out_pio:
 	kfree(pci_drv);
 probe_out_drv_alloc:
-	pci_iounmap(pdev, pio_base);
+	if (IS_ENABLED(CONFIG_GPIOLIB))
+		pci_iounmap(pdev, pio_base);
 probe_out_iomap_pio:
 	pci_iounmap(pdev, mdio_base);
 probe_out_iomap_mdio:
@@ -258,15 +246,18 @@ static void edgx_pci_remove(struct pci_dev *pdev)
 
 	br_base = edgx_br_get_base(pci_drv->br);
 	mdio_base = edgx_mdio_get_base(pci_drv->mdio);
-	pio_base = flx_pio_get_base(pci_drv->pio);
 
 	edgx_br_shutdown(pci_drv->br);
 	edgx_mdio_shutdown(pci_drv->mdio);
-	flx_pio_shutdown(pci_drv->pio);
+	if (IS_ENABLED(CONFIG_GPIOLIB)) {
+		pio_base = flx_pio_get_base(pci_drv->pio);
+		flx_pio_shutdown(pci_drv->pio);
+	}
 	kfree(pci_drv);
 	if ((pdev->msi_enabled) || (pdev->msix_enabled))
 		pci_free_irq_vectors(pdev);
-	pci_iounmap(pdev, pio_base);
+	if (IS_ENABLED(CONFIG_GPIOLIB))
+		pci_iounmap(pdev, pio_base);
 	pci_iounmap(pdev, mdio_base);
 	pci_iounmap(pdev, br_base);
 	pci_release_regions(pdev);
