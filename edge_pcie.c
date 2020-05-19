@@ -37,19 +37,15 @@
 
 #define PFX			"EDGX-PCIe: "
 #define DRV_NAME		"edgx-pcie"
-#define VENDOR_ID		(0x1059)
-#define DEVICE_ID		(0xa100)
-#define SUBVENDOR_ID		(0x1c7e)
-#define SUBDEVICE_ID		(0x132)
-#define EDGX_PCI_BR_BAR		(0U)
-#define EDGX_PCI_BR_OFFS	(0x2000000)
-#define EDGX_PCI_BR_SIZE	(0x1ffffff)
-#define EDGX_PCI_MDIO_BAR	(0U)
-#define EDGX_PCI_MDIO_OFFS	(0x4000000)
-#define EDGX_PCI_MDIO_SIZE	(0x3ff)
-#define EDGX_PCI_PIO_BAR	(2U)
-#define EDGX_PCI_PIO_OFFS	(0xf0f00)
-#define EDGX_PCI_PIO_SIZE	(0x1f)
+#define EDGX_PCI_BR_BAR		0
+#define EDGX_PCI_BR_OFFS	0x0000000
+#define EDGX_PCI_BR_SIZE	0x1ffffff
+#define EDGX_PCI_MDIO_BAR	0
+#define EDGX_PCI_MDIO_OFFS	0x4000000
+#define EDGX_PCI_MDIO_SIZE	0x3ff
+#define EDGX_PCI_PIO_BAR	2
+#define EDGX_PCI_PIO_OFFS	0xf0f00
+#define EDGX_PCI_PIO_SIZE	0x1f
 
 struct edgx_pci_drv {
 	struct edgx_br *br;
