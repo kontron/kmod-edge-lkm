@@ -55,4 +55,8 @@ int edgx_sched_get_trans_rate(struct edgx_sched *sched,
 			      unsigned int queue_idx,
 			      struct edgx_sched_tr_rate *tr_rate);
 
+int edgx_sched_get_trans_rate_lock(struct edgx_sched *sched,
+			      unsigned int queue_idx,
+			      struct edgx_sched_tr_rate *tr_rate);
+
 #endif /* _EDGE_SCHED_H */
