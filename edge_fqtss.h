@@ -36,5 +36,5 @@ int edgx_probe_fqtss(struct edgx_pt *pt,
 void edgx_shutdown_fqtss(struct edgx_fqtss *fqtss);
 
 void edgx_fqtss_sched_change(struct edgx_fqtss *fqtss,
-			     const struct edgx_sched_tr_rate *tr_rate);
+		struct edgx_sched *sched);
 #endif /* _EDGE_FQTSS_H */

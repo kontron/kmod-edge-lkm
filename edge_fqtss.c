@@ -202,14 +202,15 @@ static u16 edgx_fqtss_calc_idle_slope(struct edgx_fqtss *fqtss, u8 idx,
 }
 
 void edgx_fqtss_sched_change(struct edgx_fqtss *fqt
-		, const struct edgx_sched_tr_rate *tr_rate)
+		, struct edgx_sched *sched)
 {
 	u8	i = 0;
 	u16	addend = 0;
 	int	clk;
 	u8	nr_queues;
+	struct edgx_sched_tr_rate tr_rate;
 
-	if (!fqt || !tr_rate)
+	if (!fqt || !sched)
 		return;
 
 	clk = edgx_fqtss_get_clk(fqt);
@@ -218,8 +219,15 @@ void edgx_fqtss_sched_change(struct edgx_fqtss *fqt
 
 	/*Recalculate value in shaper reg in case TSA = CBS*/
 	for (i = 0; i < nr_queues; i++) {
-		addend = edgx_fqtss_calc_idle_slope(fqt, i, tr_rate->num,
-						    tr_rate->denom);
+		/* This function is called in the context of sched - that means
+		 * that the scheduler data already locked. Thus here the
+		 * function edgx_sched_get_trans_rate can/must be
+		 * called, because the call of edgx_sched_get_trans_rate_lock
+		 * would result in a dead lock.
+		 */
+		edgx_sched_get_trans_rate(sched, i, &tr_rate);
+		addend = edgx_fqtss_calc_idle_slope(fqt, i, tr_rate.num,
+						    tr_rate.denom);
 		edgx_fqtss_write_addend(fqt, addend, i, clk);
 	}
 }
@@ -283,7 +291,7 @@ static ssize_t admin_slope_tbl_write(struct file *filp, struct kobject *kobj,
 	fqtss->addend[idx] = addend;
 	mutex_unlock(&fqtss->lock);
 
-	edgx_sched_get_trans_rate(sched, idx, &tr_rate);
+	edgx_sched_get_trans_rate_lock(sched, idx, &tr_rate);
 	addend = edgx_fqtss_calc_idle_slope(fqtss, idx, tr_rate.num,
 					    tr_rate.denom);
 	edgx_fqtss_write_addend(fqtss, addend, (u8)idx, clk);

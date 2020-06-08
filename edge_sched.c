@@ -372,7 +372,7 @@ static void edgx_sched_calc_trans_rate(struct edgx_sched *sched)
 		idle_time = cyc_time_nsec - sum_total;
 
 		/* The gate remains in the last state -> add idle time */
-		if (tab->entries[i].gate_states & BIT(queue))
+		if (tab->entries[tab->list_len - 1].gate_states & BIT(queue))
 			sum += idle_time;
 
 		if (sum) {
@@ -394,7 +394,7 @@ static void edgx_sched_notify(struct edgx_sched *sched)
 	struct edgx_fqtss *fqtss = edgx_pt_get_fqtss(sched->parent);
 
 	sched_dbg("Notify\n");
-	edgx_fqtss_sched_change(fqtss, &sched->tr_rate[0]);
+	edgx_fqtss_sched_change(fqtss, sched);
 }
 
 /* NOTE: Deviation from the standard:
@@ -998,20 +998,28 @@ int edgx_sched_get_trans_rate(struct edgx_sched *sched,
 			      unsigned int queue_idx,
 			      struct edgx_sched_tr_rate *tr_rate)
 {
+	if (!sched->gate_enabled) {
+		tr_rate->num = 1;
+		tr_rate->denom = 1;
+		return 0;
+	}
+	tr_rate->num = sched->tr_rate[queue_idx].num;
+	tr_rate->denom = sched->tr_rate[queue_idx].denom;
+	return 0;
+}
+
+int edgx_sched_get_trans_rate_lock(struct edgx_sched *sched,
+			      unsigned int queue_idx,
+			      struct edgx_sched_tr_rate *tr_rate)
+{
 	if (!sched || !tr_rate)
 		return -EINVAL;
 
 	if (queue_idx >= sched->com->nr_queues)
 		return -EINVAL;
 
-	if (!sched->gate_enabled) {
-		tr_rate->num = 1;
-		tr_rate->denom = 1;
-		return 0;
-	}
 	mutex_lock(&sched->lock);
-	tr_rate->num = sched->tr_rate[queue_idx].num;
-	tr_rate->denom = sched->tr_rate[queue_idx].denom;
+	edgx_sched_get_trans_rate(sched, queue_idx, tr_rate);
 	mutex_unlock(&sched->lock);
 	return 0;
 }
