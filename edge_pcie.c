@@ -134,7 +134,7 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto probe_out_iomap_mdio;
 	}
 
-	if (IS_ENABLED(CONFIG_GPIOLIB)) {
+	if (0 && IS_ENABLED(CONFIG_GPIOLIB)) {
 		pio_base = pci_iomap_range(pdev, EDGX_PCI_PIO_BAR,
 					   EDGX_PCI_PIO_OFFS, EDGX_PCI_PIO_SIZE);
 		if (!pio_base) {
@@ -150,7 +150,7 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto probe_out_drv_alloc;
 	}
 
-	if (IS_ENABLED(CONFIG_GPIOLIB)) {
+	if (0 && IS_ENABLED(CONFIG_GPIOLIB)) {
 		ret = flx_pio_probe_one(pio_id, &pdev->dev, pio_base,
 					&pci_drv->pio);
 		if (ret) {
@@ -209,12 +209,12 @@ probe_out_link:
 probe_out_bridge:
 	edgx_mdio_shutdown(pci_drv->mdio);
 probe_out_mdio:
-	if (IS_ENABLED(CONFIG_GPIOLIB))
+	if (0 && IS_ENABLED(CONFIG_GPIOLIB))
 		flx_pio_shutdown(pci_drv->pio);
 probe_out_pio:
 	kfree(pci_drv);
 probe_out_drv_alloc:
-	if (IS_ENABLED(CONFIG_GPIOLIB))
+	if (0 && IS_ENABLED(CONFIG_GPIOLIB))
 		pci_iounmap(pdev, pio_base);
 probe_out_iomap_pio:
 	pci_iounmap(pdev, mdio_base);
@@ -245,14 +245,14 @@ static void edgx_pci_remove(struct pci_dev *pdev)
 
 	edgx_br_shutdown(pci_drv->br);
 	edgx_mdio_shutdown(pci_drv->mdio);
-	if (IS_ENABLED(CONFIG_GPIOLIB)) {
+	if (0 && IS_ENABLED(CONFIG_GPIOLIB)) {
 		pio_base = flx_pio_get_base(pci_drv->pio);
 		flx_pio_shutdown(pci_drv->pio);
 	}
 	kfree(pci_drv);
 	if ((pdev->msi_enabled) || (pdev->msix_enabled))
 		pci_free_irq_vectors(pdev);
-	if (IS_ENABLED(CONFIG_GPIOLIB))
+	if (0 && IS_ENABLED(CONFIG_GPIOLIB))
 		pci_iounmap(pdev, pio_base);
 	pci_iounmap(pdev, mdio_base);
 	pci_iounmap(pdev, br_base);
