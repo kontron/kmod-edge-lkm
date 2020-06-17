@@ -30,6 +30,7 @@ struct edgx_br;
 #include <linux/kernel.h>
 #include "edge_defines.h"
 #include "edge_bridge.h"
+#include "tsnic_vpd.h"
 
 #define EDGX_BR_GEN_REG		(0x10)
 #define EDGX_BR_INT_MASK	(0x02C)
@@ -44,7 +45,7 @@ extern char *syncmode;
 extern struct attribute *ieee8021_brpt_common[];
 
 int edgx_br_probe_one(unsigned int br_id, struct device *dev,
-		      void *base, int irq, struct edgx_br **br_ret);
+		      void *base, int irq, struct edgx_br **br_ret, struct vpd *vpd);
 void edgx_br_shutdown(struct edgx_br *br);
 void *edgx_br_get_base(struct edgx_br *br);
 

@@ -34,6 +34,7 @@
 #include "edge_link.h"
 #include "edge_mdio.h"
 #include "altera_pio.h"
+#include "tsnic_vpd.h"
 
 #define PFX			"EDGX-PCIe: "
 #define DRV_NAME		"edgx-pcie"
@@ -51,6 +52,8 @@ struct edgx_pci_drv {
 	struct edgx_br *br;
 	struct edgx_mdio *mdio;
 	struct flx_pio_dev_priv *pio;
+	void *i2c_base;
+	struct vpd *vpd;
 };
 
 static const struct pci_device_id edgx_pci_ids[] =
@@ -86,6 +89,8 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	char mdio_bus_id_pt[MII_BUS_ID_SIZE + 4];
 	struct edgx_pt *pt;
 	struct edgx_link *lnk;
+	void *i2c_base;
+	char asset[TSNIC_SNO_LEN + 1];
 
 	ret = pci_enable_device(pdev);
 	if (ret) {
@@ -144,10 +149,24 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		}
 	}
 
+	i2c_base = pci_iomap(pdev, 5, 0);
+	if (!i2c_base) {
+		dev_err(&pdev->dev, "Cannot map I2C device memory.\n");
+		ret = -ENOMEM;
+		goto probe_out_iomap_i2c;
+	}
+
 	pci_drv = kzalloc(sizeof(*pci_drv), GFP_KERNEL);
 	if (!pci_drv) {
 		ret = -ENOMEM;
 		goto probe_out_drv_alloc;
+	}
+	pci_drv->i2c_base = i2c_base;
+
+	pci_drv->vpd = tsnic_vpd_init(i2c_base);
+	if (IS_ERR(pci_drv->vpd)) {
+		ret = PTR_ERR(pci_drv->vpd);
+		goto vpd_init_out;
 	}
 
 	if (0 && IS_ENABLED(CONFIG_GPIOLIB)) {
@@ -167,7 +186,7 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	mdio_id++;
 
 	ret = edgx_br_probe_one(bridge_id, &pdev->dev, br_base, irqbase,
-				&pci_drv->br);
+				&pci_drv->br, pci_drv->vpd);
 	if (ret) {
 		goto probe_out_bridge;
 	}
@@ -202,6 +221,10 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 		edgx_link_set_delays(lnk, 6258, 679, 153, 2178, 362, 235);
 	}
+
+	tsnic_vpd_asset_tag(pci_drv->vpd, asset, sizeof(asset));
+    dev_info(&pdev->dev, "Serial number - %s.\n", asset);
+
 	return ret;
 
 probe_out_link:
@@ -213,7 +236,10 @@ probe_out_mdio:
 		flx_pio_shutdown(pci_drv->pio);
 probe_out_pio:
 	kfree(pci_drv);
+vpd_init_out:
 probe_out_drv_alloc:
+	pci_iounmap(pdev, i2c_base);
+probe_out_iomap_i2c:
 	if (0 && IS_ENABLED(CONFIG_GPIOLIB))
 		pci_iounmap(pdev, pio_base);
 probe_out_iomap_pio:
@@ -249,6 +275,7 @@ static void edgx_pci_remove(struct pci_dev *pdev)
 		pio_base = flx_pio_get_base(pci_drv->pio);
 		flx_pio_shutdown(pci_drv->pio);
 	}
+	tsnic_vpd_free(pci_drv->vpd);
 	kfree(pci_drv);
 	if ((pdev->msi_enabled) || (pdev->msix_enabled))
 		pci_free_irq_vectors(pdev);
@@ -256,6 +283,7 @@ static void edgx_pci_remove(struct pci_dev *pdev)
 		pci_iounmap(pdev, pio_base);
 	pci_iounmap(pdev, mdio_base);
 	pci_iounmap(pdev, br_base);
+	pci_iounmap(pdev, pci_drv->i2c_base);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
 }

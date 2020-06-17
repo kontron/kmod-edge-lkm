@@ -43,6 +43,7 @@ $(edge_lkm_mod)-objs := \
 		   edge_mdio.o               \
 		   edge_port.o               \
 		   edge_time.o               \
+		   tsnic_vpd.o               \
 
 ifeq ($(target),platform)
 $(edge_lkm_mod)-objs += edge_platform.o

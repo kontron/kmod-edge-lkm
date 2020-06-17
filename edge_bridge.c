@@ -43,6 +43,7 @@
 #include "edge_sched.h"
 #include "edge_br_sid.h"
 #include "edge_frer.h"
+#include "tsnic_vpd.h"
 
 struct edgx_br {
 	struct {
@@ -93,6 +94,8 @@ struct edgx_br {
 	u16  (*get_int_mask)(struct edgx_br *br);
 	u16  (*get_int_stat)(struct edgx_br *br);
 	void (*clr_int_stat)(struct edgx_br *br, u16 stat);
+
+	struct vpd *vpd;
 };
 
 struct _sysfs_grp {
@@ -749,7 +752,8 @@ static void edgx_shutdown_bridge(struct edgx_br *br)
 }
 
 int edgx_br_probe_one(unsigned int br_id, struct device *dev,
-		      void *base, int irq, struct edgx_br **br_ret)
+		      void *base, int irq, struct edgx_br **br_ret,
+		      struct vpd *vpd)
 {
 	int ret;
 	struct edgx_br *br;
@@ -766,10 +770,14 @@ int edgx_br_probe_one(unsigned int br_id, struct device *dev,
 	br->bridge.dev   = NULL;
 	br->bridge.refs  = 0;
 	br->hw.id        = br_id;
+	br->vpd          = vpd;
+
 
 	spin_lock_init(&br->lock);
-	eth_random_addr(br->hw.base_mac);
-	br->hw.base_mac[ETH_ALEN - 1] = 0;
+	if (tsnic_vpd_eth_hw_addr(br->vpd, br->hw.base_mac)) {
+		eth_random_addr(br->hw.base_mac);
+		br->hw.base_mac[ETH_ALEN - 1] = 0;
+	}
 	br->ageing_time = 300;
 	edgx_br_sysfs_init(br);
 
