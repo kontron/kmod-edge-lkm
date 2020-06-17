@@ -1749,7 +1749,8 @@ static struct edgx_pt *_edgx_pt_init(struct edgx_br  *br,
 	pt->netdev = netdev;
 
 	t = ether_addr_to_u64(edgx_br_get_mac(br));
-	t += pt->ptid;
+	/* EP is -1.. so add one here */
+	t += pt->ptid + 1;
 	u64_to_ether_addr(t, netdev->dev_addr);
 
 	if (PT_IS_EP_ID(ptid))
