@@ -1728,7 +1728,7 @@ static struct edgx_pt *_edgx_pt_init(struct edgx_br  *br,
 {
 	struct edgx_pt  *pt   = NULL;
 	struct net_device *netdev = alloc_etherdev(sizeof(**ppt));
-	u8 mac[ETH_ALEN];
+	u64 t;
 
 	if (!netdev)
 		return NULL;
@@ -1748,9 +1748,9 @@ static struct edgx_pt *_edgx_pt_init(struct edgx_br  *br,
 	pt->parent = br;
 	pt->netdev = netdev;
 
-	ether_addr_copy(mac, edgx_br_get_mac(br));
-	mac[ETH_ALEN - 1] = (u8)pt->ptid;
-	ether_addr_copy(netdev->dev_addr, mac);
+	t = ether_addr_to_u64(edgx_br_get_mac(br));
+	t += pt->ptid;
+	u64_to_ether_addr(t, netdev->dev_addr);
 
 	if (PT_IS_EP_ID(ptid))
 		snprintf(pt->netdev->name, IFNAMSIZ, "sw%uep",
