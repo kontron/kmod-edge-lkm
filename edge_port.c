@@ -972,7 +972,11 @@ static int edgx_pt_do_ioctl(struct net_device *netdev, struct ifreq *ifr,
 	return -EOPNOTSUPP;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
+static void edgx_pt_tx_timeout(struct net_device *netdev, unsigned int txqueue)
+#else
 static void edgx_pt_tx_timeout(struct net_device *netdev)
+#endif
 {
 	struct edgx_pt *pt = net2pt(netdev);
 
