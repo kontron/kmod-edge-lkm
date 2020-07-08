@@ -59,4 +59,10 @@ int edgx_sched_get_trans_rate_lock(struct edgx_sched *sched,
 			      unsigned int queue_idx,
 			      struct edgx_sched_tr_rate *tr_rate);
 
+void edgx_sched_clr_int_mask(struct edgx_sched_com *sc);
+void edgx_sched_set_int_mask(struct edgx_sched_com *sc, u16 mask);
+u16 edgx_sched_get_int_mask(struct edgx_sched_com *sc);
+u16 edgx_sched_get_int_stat(struct edgx_sched_com *sc);
+u16 edgx_sched_isr(struct edgx_sched_com *sc, u16 intmask, u16 intstat);
+
 #endif /* _EDGE_SCHED_H */

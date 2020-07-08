@@ -58,5 +58,6 @@ struct sk_buff *edgx_com_ts_xmit(struct edgx_com_ts *ts,
 				 struct sk_buff *skb, ptcom_t ptcom);
 void edgx_com_ts_rx(struct edgx_com_ts *ts,
 		    struct sk_buff *skb, ptcom_t ptcom);
+u16 edgx_com_ts_isr(struct edgx_com_ts *ts, u16 intmask, u16 intstat);
 
 #endif /* _CORE_EDGE_COM_TS_H */

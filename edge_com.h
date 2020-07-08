@@ -65,5 +65,6 @@ int edgx_com_hwts_get(struct edgx_com_hdl *hcom, struct ifreq *ifr);
 void edgx_com_txts_dispatch(struct sk_buff *skb,
 			    struct skb_shared_hwtstamps *hwts);
 void edgx_com_tx_timeout(struct edgx_com_hdl *hcom, struct net_device *netdev);
+u16 edgx_com_dma_isr(struct edgx_com *com, u16 intmask, u16 intstat);
 
 #endif /* _EDGE_COM_H */

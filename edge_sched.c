@@ -160,28 +160,43 @@ static void edgx_sched_isr_work(struct work_struct *work)
 		if (sc->sched_list[i])
 			edgx_sched_stm_cct_handler(sc->sched_list[i]);
 	}
-	edgx_wr16(sc->iobase, EDGX_SCHED_INT_MASK, EDGX_SCHED_INT_MSKVAL);
+	edgx_br_set_int_mask_sched_irqsave(sc->parent, EDGX_SCHED_INT_MSKVAL);
 }
 
-static irqreturn_t edgx_sched_isr(int irq, void *device)
+u16 edgx_sched_get_int_stat(struct edgx_sched_com *sc)
 {
-	struct edgx_sched_com *sc = (struct edgx_sched_com *)device;
-	u16 mask;
-	u16 stat;
+	return edgx_rd16(sc->iobase, EDGX_SCHED_INT_STAT);
+}
 
-	mask = edgx_rd16(sc->iobase, EDGX_SCHED_INT_MASK);
-	if (!mask)
-		return IRQ_NONE;
+u16 edgx_sched_get_int_mask(struct edgx_sched_com *sc)
+{
+	return edgx_rd16(sc->iobase, EDGX_SCHED_INT_MASK);
+}
 
-	stat = edgx_rd16(sc->iobase, EDGX_SCHED_INT_STAT);
-	if (!(mask & stat))
-		return IRQ_NONE;
+void edgx_sched_clr_int_mask(struct edgx_sched_com *sc)
+{
+	edgx_wr16(sc->iobase, EDGX_SCHED_INT_MASK, 0U);
+}
 
-	/* Disable interrupts from FRS until they are handled */
-	edgx_wr16(sc->iobase, EDGX_SCHED_INT_MASK, 0);
+void edgx_sched_set_int_mask(struct edgx_sched_com *sc, u16 mask)
+{
+	edgx_wr16(sc->iobase, EDGX_SCHED_INT_MASK, mask);
+}
+
+u16 edgx_sched_isr(struct edgx_sched_com *sc, u16 intmask, u16 intstat)
+{
+	if (!intmask)
+		return intmask;
+
+	if (!(intmask & intstat))
+		return intmask;
+
+	/* Disable interrupts from FSC until they are handled */
+	intmask &= ~EDGX_SCHED_INT_MASK;
+
 	queue_work(sc->wq_isr, &sc->work_isr);
 
-	return IRQ_HANDLED;
+	return intmask;
 }
 
 /** Initialize common the scheduler part. */
@@ -228,14 +243,6 @@ int edgx_sched_com_probe(struct edgx_br *br, int irq, const char *drv_name,
 		pr_err("%s(): alloc_workqueue failed!\n", __func__);
 		return -ENOMEM;
 	}
-	ret = request_irq(irq, &edgx_sched_isr, IRQF_SHARED,
-			  drv_name, *psc);
-	if (ret) {
-		pr_err("%s(): request_irq failed! ret=%d, irq=%d\n",
-		       __func__, ret, irq);
-		destroy_workqueue((*psc)->wq_isr);
-		return ret;
-	}
 
 	edgx_wr16((*psc)->iobase, EDGX_SCHED_INT_STAT, 0);
 	edgx_wr16((*psc)->iobase, EDGX_SCHED_INT_MASK, EDGX_SCHED_INT_MSKVAL);
@@ -248,8 +255,6 @@ int edgx_sched_com_probe(struct edgx_br *br, int irq, const char *drv_name,
 void edgx_sched_com_shutdown(struct edgx_sched_com *sched_com)
 {
 	if (sched_com) {
-		disable_irq(sched_com->irq);
-		free_irq(sched_com->irq, sched_com);
 		cancel_work_sync(&sched_com->work_isr);
 		edgx_wr16(sched_com->iobase, EDGX_SCHED_INT_STAT, 0);
 		edgx_wr16(sched_com->iobase, EDGX_SCHED_INT_MASK, 0);
