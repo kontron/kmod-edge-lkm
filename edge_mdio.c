@@ -28,13 +28,14 @@
 #include <linux/of_mdio.h>
 #include "edge_mdio.h"
 
-#define _MDIO_ADDR               0x84
-#define _MDIO_ADDR_DEV_SHIFT     0
-#define _MDIO_ADDR_DEV_MASK      0x1F
-#define _MDIO_ADDR_PORT_SHIFT    8
-#define _MDIO_ADDR_PORT_MASK     0x1F
-#define _MDIO_ADDR_REG_SHIFT     16
-#define _MDIO_ADDR_REG_MASK      0xFFFF
+#define REG_ADR		0x10
+#define REG_WRDATA	0x20
+#define REG_CMD		0x30
+#define REG_RDDATA	0x40
+
+#define PHY_ADDR_MAGIC	0x21
+#define CMD_WRITE	1
+#define CMD_READ	2
 
 struct edgx_mdio {
 	struct list_head  entry;
@@ -44,18 +45,43 @@ struct edgx_mdio {
 	unsigned int      id;
 };
 
-static int edgx_mdio_read(struct mii_bus *bus, int addr, int regnum)
+static int __mdio_write(struct mii_bus *bus, int addr, u16 val)
 {
-	int ret;
 	struct edgx_mdio *mdio = bus->priv;
 
+	iowrite32(addr, mdio->base + REG_ADR);
+	iowrite32(val, mdio->base + REG_WRDATA);
+	iowrite32(CMD_WRITE, mdio->base + REG_CMD);
+	while (ioread32(mdio->base + REG_CMD))
+		cpu_relax();
+
+	return 0;
+}
+
+static int __mdio_read(struct mii_bus *bus, int addr)
+{
+	struct edgx_mdio *mdio = bus->priv;
+
+	iowrite32(addr, mdio->base + REG_ADR);
+	iowrite32(CMD_READ, mdio->base + REG_CMD);
+	while (ioread32(mdio->base + REG_CMD))
+		cpu_relax();
+	return ioread32(mdio->base + REG_RDDATA) & 0xffff;
+}
+
+static int __mdio_set_phy_addr(struct mii_bus *bus, int phy_id)
+{
+	return __mdio_write(bus, PHY_ADDR_MAGIC, phy_id);
+}
+
+static int edgx_mdio_read(struct mii_bus *bus, int addr, int regnum)
+{
+	struct edgx_mdio *mdio = bus->priv;
+	int ret;
+
 	mutex_lock(&mdio->lock);
-	/* Set PHY address. */
-	iowrite32((addr & _MDIO_ADDR_DEV_MASK) <<
-		  _MDIO_ADDR_DEV_SHIFT,
-		  mdio->base + _MDIO_ADDR);
-	/* Read value, but NOT from documented MDIO_ACCESS register. */
-	ret = ioread16(mdio->base + (regnum << 2));
+	__mdio_set_phy_addr(bus, addr);
+	ret = __mdio_read(bus, regnum);
 	mutex_unlock(&mdio->lock);
 
 	return ret;
@@ -64,17 +90,14 @@ static int edgx_mdio_read(struct mii_bus *bus, int addr, int regnum)
 int edgx_mdio_write(struct mii_bus *bus, int addr, int regnum, u16 val)
 {
 	struct edgx_mdio *mdio = bus->priv;
+	int ret;
 
 	mutex_lock(&mdio->lock);
-	/* Set PHY address. */
-	iowrite32((addr & _MDIO_ADDR_DEV_MASK) <<
-		  _MDIO_ADDR_DEV_SHIFT,
-		  mdio->base + _MDIO_ADDR);
-	/* Write value, but NOT to documented MDIO_ACCESS register. */
-	iowrite16(val, mdio->base + (regnum << 2));
+	__mdio_set_phy_addr(bus, addr);
+	ret = __mdio_write(bus, regnum, val);
 	mutex_unlock(&mdio->lock);
 
-	return 0;
+	return ret;
 }
 
 int edgx_mdio_probe_one(unsigned int mdio_id, struct device *dev, void *base,

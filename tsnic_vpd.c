@@ -27,7 +27,7 @@
 #define EEP_SIZE 256
 #define EEP_PAGE_SIZE 8
 #define PCI_BAR 5
-#define CSR_OFFSET 0x02000100
+#define CSR_OFFSET 0x02010000
 #define CORE_CLK 100000000ULL
 
 enum {
