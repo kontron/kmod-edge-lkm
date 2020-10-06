@@ -554,6 +554,9 @@ int edgx_probe_time(const struct edgx_br *br, struct edgx_time **ptime,
 	/* Pair up the two clocks for HW cross-timestamping */
 	ptp_clock_set_peer(time->clk[0].ptp, time->clk[1].ptp);
 
+	edgx_br_info(br, "Synchronisation mode (syncmode): %s\n",
+			syncmode);
+
 	if (!strncmp(syncmode, "1588", 4)) {
 		/* Use FRTC0 as worker (IEEE 1588 setup) */
 		edgx_tm_set_role_phc(time, EDGX_TM_ROLE_WRK,
@@ -575,6 +578,8 @@ int edgx_probe_time(const struct edgx_br *br, struct edgx_time **ptime,
 		edgx_br_err(br, "Cannot initialize clocksource!\n");
 		goto out_dev;
 	}
+	edgx_br_info(br, "Clock source rating (csrating): %d\n",
+			csrating);
 
 	edgx_br_info(br, "Timestamper clock: /dev/ptp%d\n",
 		     edgx_tm_get_ts_phc(time));

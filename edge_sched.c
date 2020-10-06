@@ -103,7 +103,7 @@ enum _stat_st_idx {
 static const struct edgx_statinfo _st_statinfo = {
 	.feat_id = EDGX_STAT_FEAT_ST,
 	/* Worst case, there can be one TX_OVERFLOW in every interval of the
-	 * gate control list. Since the lower limit of of the interval as of
+	 * gate control list. Since the lower limit of the interval as of
 	 * the IP implementation is 64 clock (= 250ns@255MHz, where 255 MHz
 	 * is the highest frequency possible on FSC), i.e., the 32bit delta-
 	 * counter wraps after
@@ -128,7 +128,7 @@ struct edgx_sched_com {
 	u16			  ns_per_clk;	  /* ns per clock tick */
 	u32			  max_entry_cnt; /* Maximum ctrl entry count */
 	u32			  max_cyc_time_ns;/*Maximum cycle time*/
-	int			  irq;
+	struct edgx_br_irq	 *irq;
 	struct work_struct	  work_isr;
 	struct workqueue_struct	 *wq_isr;
 	u8			  nr_queues;
@@ -160,7 +160,9 @@ static void edgx_sched_isr_work(struct work_struct *work)
 		if (sc->sched_list[i])
 			edgx_sched_stm_cct_handler(sc->sched_list[i]);
 	}
-	edgx_wr16(sc->iobase, EDGX_SCHED_INT_MASK, EDGX_SCHED_INT_MSKVAL);
+	if (sc->irq->trig == EDGX_IRQ_LEVEL_TRIG)
+		edgx_wr16(sc->iobase, EDGX_SCHED_INT_MASK,
+			  EDGX_SCHED_INT_MSKVAL);
 }
 
 static irqreturn_t edgx_sched_isr(int irq, void *device)
@@ -169,23 +171,26 @@ static irqreturn_t edgx_sched_isr(int irq, void *device)
 	u16 mask;
 	u16 stat;
 
-	mask = edgx_rd16(sc->iobase, EDGX_SCHED_INT_MASK);
-	if (!mask)
-		return IRQ_NONE;
+	if (sc->irq->shared) {
+		mask = edgx_rd16(sc->iobase, EDGX_SCHED_INT_MASK);
+		if (!mask)
+			return IRQ_NONE;
 
-	stat = edgx_rd16(sc->iobase, EDGX_SCHED_INT_STAT);
-	if (!(mask & stat))
-		return IRQ_NONE;
+		stat = edgx_rd16(sc->iobase, EDGX_SCHED_INT_STAT);
+		if (!(mask & stat))
+			return IRQ_NONE;
+	}
 
-	/* Disable interrupts from FRS until they are handled */
-	edgx_wr16(sc->iobase, EDGX_SCHED_INT_MASK, 0);
+	if (sc->irq->trig == EDGX_IRQ_LEVEL_TRIG)
+		edgx_wr16(sc->iobase, EDGX_SCHED_INT_MASK, 0);
 	queue_work(sc->wq_isr, &sc->work_isr);
 
 	return IRQ_HANDLED;
 }
 
 /** Initialize common the scheduler part. */
-int edgx_sched_com_probe(struct edgx_br *br, int irq, const char *drv_name,
+int edgx_sched_com_probe(struct edgx_br *br, struct edgx_br_irq *irq,
+			 const char *drv_name,
 			 struct edgx_sched_com **psc)
 {
 	const struct edgx_ifreq ifreq = { .id = AC_SCHED_ID, .v_maj = 1 };
@@ -228,11 +233,18 @@ int edgx_sched_com_probe(struct edgx_br *br, int irq, const char *drv_name,
 		pr_err("%s(): alloc_workqueue failed!\n", __func__);
 		return -ENOMEM;
 	}
-	ret = request_irq(irq, &edgx_sched_isr, IRQF_SHARED,
-			  drv_name, *psc);
+
+	if (irq->shared)
+		ret = request_irq(irq->irq_vec[0], &edgx_sched_isr, IRQF_SHARED,
+				  drv_name, *psc);
+	else
+		ret = request_irq(irq->irq_vec[EDGX_IRQ_NR_SCHED_TAB],
+				  &edgx_sched_isr, IRQF_SHARED, drv_name, *psc);
+
 	if (ret) {
 		pr_err("%s(): request_irq failed! ret=%d, irq=%d\n",
-		       __func__, ret, irq);
+		       __func__, ret, irq->shared ?
+		       irq->irq_vec[0] : irq->irq_vec[EDGX_IRQ_NR_SCHED_TAB]);
 		destroy_workqueue((*psc)->wq_isr);
 		return ret;
 	}
@@ -248,8 +260,12 @@ int edgx_sched_com_probe(struct edgx_br *br, int irq, const char *drv_name,
 void edgx_sched_com_shutdown(struct edgx_sched_com *sched_com)
 {
 	if (sched_com) {
-		disable_irq(sched_com->irq);
-		free_irq(sched_com->irq, sched_com);
+		if (sched_com->irq->shared)
+			free_irq(sched_com->irq->irq_vec[0], sched_com);
+		else
+			free_irq(sched_com->irq->irq_vec[EDGX_IRQ_NR_SCHED_TAB],
+				 sched_com);
+
 		cancel_work_sync(&sched_com->work_isr);
 		edgx_wr16(sched_com->iobase, EDGX_SCHED_INT_STAT, 0);
 		edgx_wr16(sched_com->iobase, EDGX_SCHED_INT_MASK, 0);
@@ -451,9 +467,7 @@ static void edgx_sched_adjust_time(struct edgx_sched *sched,
 	u32 adj = EDGX_SCHED_TIME_ADJ_DC;
 	struct edgx_link *lnk = edgx_pt_get_link(sched->parent);
 	ktime_t link_dly = edgx_link_get_tx_delay(lnk);
-	ktime_t g2o_max = edgx_pt_get_g2omax(sched->parent);
 	ktime_t g2o_min = edgx_pt_get_g2omin(sched->parent);
-	u32 g2o_avg = (ktime_to_ns(g2o_min) + ktime_to_ns(g2o_max)) >> 1;
 	s64 diff;
 
 	switch (sched->link_mode) {
@@ -477,9 +491,12 @@ static void edgx_sched_adjust_time(struct edgx_sched *sched,
 	adj *= sched->com->ns_per_clk;
 	if (sched->com->ns_per_clk == 10U)
 		adj = (adj * 4U) / 5U;	/* Divide by 1.25 */
+	else if (sched->com->ns_per_clk == 5U)
+		adj = (adj * 8U) / 5U;  /* 200Mhz */
+
 
 	adj += 10U * sched->com->ns_per_clk;	/* Additional fixed delay */
-	diff = adj + g2o_avg + ktime_to_ns(link_dly);
+	diff = adj + ktime_to_ns(g2o_min) + ktime_to_ns(link_dly);
 
 	if (increase)
 		set_normalized_timespec64(out_time, in_time->tv_sec,

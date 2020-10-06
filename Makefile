@@ -2,7 +2,7 @@
 
 CONFIG_MODULE_SIG=y
 CONFIG_MODULE_SIG_ALL=y
-GIT_COMMIT := $(shell git log -1 --pretty=format:"%h")
+GIT_COMMIT := "n/a"
 
 ifeq ($(KDIR),)
 KDIR := $(KERNEL_SRC)
@@ -12,8 +12,8 @@ KDIR := /lib/modules/$(shell uname -r)/build
 endif
 
 ifndef target
-  target := platform
-  $(info Defaulting to PLATFORM host interface driver)
+  target := pcie
+  $(info Defaulting to PCIe host interface driver)
 endif
 
 edge_lkm_mod   := edgx_lkm

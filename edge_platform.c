@@ -27,6 +27,7 @@
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/slab.h>
+#include <linux/interrupt.h>
 #include "edge_bridge.h"
 #include "edge_mdio.h"
 #include "altera_pio.h"
@@ -81,6 +82,11 @@ static struct platform_driver edgx_sw_pfm_driver = {
 	.remove = edgx_sw_pfm_remove,
 };
 
+struct edgx_sw_pfm_drv {
+	struct edgx_br *br;
+	struct edgx_br_irq irq;
+};
+
 static struct platform_driver edgx_mdio_pfm_driver = {
 	.driver = {
 		.name = "edgx-mdio",
@@ -109,7 +115,7 @@ static int edgx_get_mem_res(struct platform_device *pdev, void **base)
 		return -ENODEV;
 	}
 
-	dev_info(&pdev->dev, "MEM-resource '%s' 0x%x/0x%x -> 0x%p\n",
+	dev_info(&pdev->dev, "MEM-resource '%s' 0x%x/0x%x -> 0x%px\n",
 		 mem->name, mem->start, resource_size(mem), *base);
 	return 0;
 }
@@ -155,48 +161,91 @@ static int flx_pio_pfm_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static int edgx_sw_pfm_get_irq(struct platform_device *pdev,
+			       struct edgx_br_irq *sw_irq)
+{
+	int ret, i;
+	struct resource *irq;
+
+	ret = platform_irq_count(pdev);
+	if ((ret != 1) && (ret != EDGX_IRQ_CNT)) {
+		dev_err(&pdev->dev, "Invalid IRQ count = %d!\n", ret);
+		return -ENODEV;
+	}
+
+	sw_irq->shared = (ret == 1);
+
+	for (i = 0; i < ret; i++) {
+		irq = platform_get_resource(pdev, IORESOURCE_IRQ, i);
+		if (!irq) {
+			dev_err(&pdev->dev, "Get IRQ resource %d failed!\n", i);
+			return ret;
+		}
+		sw_irq->irq_vec[i] = irq->start;
+
+		if (i == 0) {
+			if ((irq->flags & IORESOURCE_IRQ_HIGHLEVEL) ||
+			    (irq->flags & IORESOURCE_IRQ_LOWLEVEL))
+				sw_irq->trig = EDGX_IRQ_LEVEL_TRIG;
+			else
+				sw_irq->trig = EDGX_IRQ_EDGE_TRIG;
+		}
+		dev_info(&pdev->dev, "IRQ-resource: %pr\n", irq);
+	}
+	return 0;
+}
+
 static int edgx_sw_pfm_probe(struct platform_device *pdev)
 {
 	int ret;
-	struct resource *irq;
-	int irq_nr = -1;
 	void *base;
-	struct edgx_br *br;
+	struct edgx_sw_pfm_drv *sw_pfm_drv;
 
 	ret = edgx_get_mem_res(pdev, &base);
 	if (ret)
 		return ret;
 
-	irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (irq) {
-		irq_nr = irq->start;
-		dev_info(&pdev->dev, "IRQ-resource  0x%p %d\n", irq, irq_nr);
+	sw_pfm_drv = kzalloc(sizeof(*sw_pfm_drv), GFP_KERNEL);
+	if (!sw_pfm_drv) {
+		ret = -ENOMEM;
+		goto sw_pfm_probe_out_alloc;
 	}
 
-	ret = edgx_br_probe_one(bridge_id, &pdev->dev, base, irq_nr, &br);
-	if (ret) {
-		iounmap(base);
-		return ret;
-	}
-	dev_set_drvdata(&pdev->dev, br);
+	ret = edgx_sw_pfm_get_irq(pdev, &sw_pfm_drv->irq);
+	if (ret)
+		goto sw_pfm_probe_out_irq;
+
+	ret = edgx_br_probe_one(bridge_id, &pdev->dev, base, &sw_pfm_drv->irq,
+				&sw_pfm_drv->br);
+	if (ret)
+		goto sw_pfm_probe_out_br_probe;
+
+	dev_set_drvdata(&pdev->dev, sw_pfm_drv);
 	bridge_id++;
 	return 0;
+
+sw_pfm_probe_out_br_probe:
+sw_pfm_probe_out_irq:
+	kfree(sw_pfm_drv);
+sw_pfm_probe_out_alloc:
+	iounmap(base);
+	return ret;
 }
 
 static int edgx_sw_pfm_remove(struct platform_device *pdev)
 {
 	void *base;
-	struct edgx_br *br;
+	struct edgx_sw_pfm_drv *sw_pfm_drv;
 
-	br = dev_get_drvdata(&pdev->dev);
-	if (!br)
+	sw_pfm_drv = dev_get_drvdata(&pdev->dev);
+	if (!sw_pfm_drv)
 		return -ENODEV;
 
-	base = edgx_br_get_base(br);
+	base = edgx_br_get_base(sw_pfm_drv->br);
 	if (!base)
 		return -ENODEV;
 
-	edgx_br_shutdown(br);
+	edgx_br_shutdown(sw_pfm_drv->br);
 	iounmap(base);
 	dev_info(&pdev->dev, "Removed device '%s'\n",
 		 dev_name(&pdev->dev));

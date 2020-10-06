@@ -253,9 +253,9 @@ int flx_pio_probe_one(unsigned int pio_id, struct device *dev, void *base,
 	/* FIXME: workaround for PHY reset */
 	flx_pio_gpio_direction_output(chip, 0, 0);
 	flx_pio_gpio_set(chip, 0, 0);
-	msleep(200);
+	msleep(300);
 	flx_pio_gpio_set(chip, 0, 1);
-	msleep(200);
+	msleep(300);
 
 	return 0;
 

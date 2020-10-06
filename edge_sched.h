@@ -41,7 +41,8 @@ struct edgx_sched;
 
 struct edgx_sched_com;
 
-int edgx_sched_com_probe(struct edgx_br *br, int irq, const char *drv_name,
+int edgx_sched_com_probe(struct edgx_br *br, struct edgx_br_irq *irq,
+			 const char *drv_name,
 			 struct edgx_sched_com **psched);
 
 void edgx_sched_com_shutdown(struct edgx_sched_com *sched_com);

@@ -45,6 +45,10 @@ struct edgx_stat {
 
 /* Mask for selector bits in counter control register (bits 8-12).*/
 #define _STAT_SEL_MASK  0x1F00
+#define _STAT_CMD_REG	0x2
+#define _STAT_CNT_LO	0x8
+#define _STAT_CNT_HI	0xA
+#define _STAT_CMD_READ  (1<<15)
 
 struct edgx_stat_hdl {
 	struct edgx_stat           *parent;
@@ -71,8 +75,8 @@ static inline struct _edgx_ptstat *__edgx_stat_get_pts(struct edgx_stat *sm,
 static int __edgx_stat_update(struct edgx_stat_hdl *sh, bool wait)
 {
 	int di; /* di: data index (in SW) */
-	edgx_io_t *cnt_base;
-	u16 trigger;
+	u8 *cnt_base;
+	u16 trigger, reg;
 	struct _edgx_ptstat *pts;
 
 	trigger = ((~BIT(sh->info->feat_id)) & _STAT_SEL_MASK) | BIT(0);
@@ -102,6 +106,8 @@ static int __edgx_stat_update(struct edgx_stat_hdl *sh, bool wait)
 
 	edgx_wr16(pts->base, 0, trigger);
 
+	cnt_base = &edgx_stat_feat_offset[
+			sh->info->feat_id - EDGX_STAT_FEAT_MIN];
 	/* Locking takes 300 clock cycles * port count.
 	 * We just take 40us so that we are sure to cover 10ns clock at
 	 * 12 ports (36us).
@@ -109,15 +115,18 @@ static int __edgx_stat_update(struct edgx_stat_hdl *sh, bool wait)
 	 */
 	udelay(40);
 
-	cnt_base  = pts->base;
-	cnt_base += sh->info->base;
 
 	/* get all delta counters and increment corresponding
 	 * status words in buffer.
 	 */
-	for (di = 0; di < sh->info->nwords; di++, cnt_base += 4)
-		sh->data[di] += edgx_rd32(cnt_base, 0);
-
+	for (di = *cnt_base; di < (sh->info->nwords + *cnt_base); di++) {
+		edgx_wr16(pts->base, _STAT_CMD_REG, (di | _STAT_CMD_READ));
+		/* Wait until flags are cleared again by chip. */
+		do {
+			reg = edgx_get16(pts->base, _STAT_CMD_REG, 15, 15);
+		} while (reg);
+		sh->data[di - *cnt_base] += edgx_rd32(pts->base, _STAT_CNT_LO);
+	}
 	spin_unlock_bh(&pts->lock);
 	spin_unlock_bh(&sh->lock);
 
@@ -224,7 +233,7 @@ int edgx_probe_stat(const struct edgx_br *br, struct edgx_stat **pstat,
 	const struct edgx_ifdesc *ifd;
 	struct edgx_ifdesc        pifd;
 	ptid_t                    ptid;
-	struct edgx_ifreq         ifreq = { .id = AC_STAT_ID, .v_maj = 1 };
+	struct edgx_ifreq         ifreq = { .id = AC_STAT_ID, .v_maj = 2 };
 
 	if (!br || !pstat)
 		return -EINVAL;

@@ -25,16 +25,19 @@
 #ifndef _CORE_EDGE_COM_TS_H
 #define _CORE_EDGE_COM_TS_H
 
-#include "edge_com_intern.h"
+#include <linux/kfifo.h>
+#include <linux/net_tstamp.h>
+#include <linux/netdevice.h>
+#include "edge_defines.h"
 
 #define EDGX_COM_TS_CTRL_CNT	(4U)
+#define EDGX_COM_TS_KFIFO_LEN	((2U) * EDGX_COM_TS_CTRL_CNT)
 
 struct edgx_com_pts {
 	struct hwtstamp_config	 hwts_cfg;
 	edgx_io_t		*iobase;
-	u8			 rx_ts_pos;
-	struct sk_buff		*tx_queue[EDGX_COM_TS_CTRL_CNT];
-	u8			 tx_q_pos;
+	u8			 ptid;
+	DECLARE_KFIFO(tx_queue, struct sk_buff*, EDGX_COM_TS_KFIFO_LEN);
 	u8			 tx_ts_pos;
 	spinlock_t		 lock;		/* Sync. access to tx_queue */
 };
@@ -42,12 +45,11 @@ struct edgx_com_pts {
 struct edgx_com_ts {
 	struct edgx_br		*parent;
 	struct edgx_com_pts	*pts[EDGX_BR_MAX_PORTS];
-	int			 irq;
 	struct workqueue_struct	*wq_tx;
 	struct work_struct	 work_tx;
 };
 
-int edgx_com_ts_init(struct edgx_com_ts *ts, const char *drv_name, int irq,
+int edgx_com_ts_init(struct edgx_com_ts *ts, edgx_io_t *mngmnt_base,
 		     struct edgx_br *br);
 void edgx_com_ts_shutdown(struct edgx_com_ts *ts);
 int edgx_com_ts_cfg_get(struct edgx_com_ts *ts, ptcom_t ptcom,
@@ -58,5 +60,6 @@ struct sk_buff *edgx_com_ts_xmit(struct edgx_com_ts *ts,
 				 struct sk_buff *skb, ptcom_t ptcom);
 void edgx_com_ts_rx(struct edgx_com_ts *ts,
 		    struct sk_buff *skb, ptcom_t ptcom);
+irqreturn_t edgx_com_ts_isr(struct edgx_com_ts *ts);
 
 #endif /* _CORE_EDGE_COM_TS_H */

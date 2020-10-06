@@ -31,6 +31,7 @@ struct edgx_stat;
 struct edgx_stat_hdl;
 
 enum edgx_stat_feat_id {
+	EDGX_STAT_FEAT_MIN     = 8,
 	EDGX_STAT_FEAT_PORT    = 8,
 	EDGX_STAT_FEAT_HSRPRP  = 9,
 	EDGX_STAT_FEAT_PREEMPT = 10,
@@ -38,6 +39,15 @@ enum edgx_stat_feat_id {
 	EDGX_STAT_FEAT_ST      = 12,
 	EDGX_STAT_FEAT_MAX,
 };
+
+static u8 edgx_stat_feat_offset[EDGX_STAT_FEAT_MAX - EDGX_STAT_FEAT_MIN] = {
+	0u,
+	44u,
+	28u,
+	36u,
+	48u,
+};
+
 
 struct edgx_statinfo {
 	enum edgx_stat_feat_id feat_id;
