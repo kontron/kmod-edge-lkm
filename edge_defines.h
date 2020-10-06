@@ -44,6 +44,7 @@
 #define edgx_info(_fmt, ...) pr_info(EDGX_BR_PFX _fmt, ##__VA_ARGS__)
 #define edgx_warn(_fmt, ...) pr_warn(EDGX_BR_PFX _fmt, ##__VA_ARGS__)
 #define edgx_err(_fmt, ...)  pr_err(EDGX_BR_PFX _fmt, ##__VA_ARGS__)
+#define edgx_dbg(_fmt, ...)  pr_debug(EDGX_BR_PFX _fmt, ##__VA_ARGS__)
 
 #define EDGX_BR_MAX_PORTS   (16)
 #define EDGX_BR_MAX_TC		(8) // max number of traffic classes/queues
@@ -56,6 +57,9 @@ typedef u16 mstid_t;
 typedef u32 ptvec_t;
 typedef int ptid_t;
 typedef u8  ptflags_t;
+
+/* TODO shouldn't we use the already defined ptvec_t??? */
+typedef u16 ptcom_t;
 
 #define PT_INV_ID           (-2)
 #define PT_EP_ID            (-1)

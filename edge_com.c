@@ -30,6 +30,7 @@
 
 struct edgx_com_hdl {
 	struct edgx_com  *com;
+
 	ptcom_t           trailer;
 };
 
@@ -92,22 +93,36 @@ void edgx_com_rx_dispatch(struct edgx_com *com, struct sk_buff *skb,
 	edgx_pt_rcv(pt, skb, flags);
 }
 
-void edgx_com_init(struct edgx_com *com, struct edgx_br *br,
-		   struct edgx_com_ops *ops, pid_t ptid)
-{
-	com->parent    = br;
-	com->mgmt_ptid = ptid;
-	com->ops       = ops;
-}
-
-int edgx_com_probe(struct edgx_br *br, const char *ifname, const char *drv_name,
-		   int irq, struct edgx_com **com)
+int edgx_com_init(struct edgx_com *com, struct edgx_br *br,
+		  struct edgx_com_ops *ops, pid_t ptid, edgx_io_t *mngmt_base)
 {
 	int ret;
 
-	ret = edgx_com_dma_probe(br, drv_name, irq, com);
+	com->parent    = br;
+	com->mgmt_ptid = ptid;
+	com->ops       = ops;
+
+	ret = edgx_com_ts_init(&com->ts, mngmt_base, br);
+	if (ret)
+		edgx_err("Cannot initialize timestamping! ret=%d\n",
+			 ret);
+
+	return ret;
+}
+
+void edgx_com_release(struct edgx_com *com)
+{
+	edgx_com_ts_shutdown(&com->ts);
+}
+
+int edgx_com_probe(struct edgx_br *br, const char *ifname,
+		   struct edgx_com **com, edgx_io_t *mngmt_base)
+{
+	int ret;
+
+	ret = edgx_com_dma_probe(br, mngmt_base, com);
 	if (ret == -ENODEV)
-		ret = edgx_com_xmii_probe(br, irq, ifname, drv_name, com);
+		ret = edgx_com_xmii_probe(br, ifname, mngmt_base, com);
 
 	if (ret)
 		edgx_br_err(br, "Cannot initialize communication subsystem\n");
@@ -172,14 +187,14 @@ int edgx_com_hwts_set(struct edgx_com_hdl *hcom, struct ifreq *ifr)
 {
 	struct edgx_com *com = hcom->com;
 
-	return com->ops->hwts_set(com, hcom->trailer, ifr);
+	return edgx_com_ts_cfg_set(&com->ts, hcom->trailer, ifr);
 }
 
 int edgx_com_hwts_get(struct edgx_com_hdl *hcom, struct ifreq *ifr)
 {
 	struct edgx_com *com = hcom->com;
 
-	return com->ops->hwts_get(com, hcom->trailer, ifr);
+	return edgx_com_ts_cfg_get(&com->ts, hcom->trailer, ifr);
 }
 
 void edgx_com_tx_timeout(struct edgx_com_hdl *hcom, struct net_device *netdev)
@@ -188,4 +203,47 @@ void edgx_com_tx_timeout(struct edgx_com_hdl *hcom, struct net_device *netdev)
 
 	if (com->ops->tx_timeout)
 		com->ops->tx_timeout(com, netdev);
+}
+
+bool edgx_multiqueue_support_get(struct edgx_com *com,
+				 u8 *num_tx_queues, u8 *num_rx_queues)
+{
+	return com->ops->multiqueue_support(com, num_tx_queues, num_rx_queues);
+}
+
+irqreturn_t edgx_com_ts_tx_isr(int irq, void *device)
+{
+	struct edgx_com *com = (struct edgx_com *)device;
+
+	return edgx_com_ts_isr(&com->ts);
+}
+
+irqreturn_t edgx_com_dma_tx_isr(int irq, void *device)
+{
+	struct edgx_com *com = (struct edgx_com *)device;
+
+	if (com->ops->dma_tx_isr)
+		return com->ops->dma_tx_isr(com);
+
+	return IRQ_NONE;
+}
+
+irqreturn_t edgx_com_dma_rx_isr(int irq, void *device)
+{
+	struct edgx_com *com = (struct edgx_com *)device;
+
+	if (com->ops->dma_rx_isr)
+		return com->ops->dma_rx_isr(com);
+
+	return IRQ_NONE;
+}
+
+irqreturn_t edgx_com_dma_err_isr(int irq, void *device)
+{
+	struct edgx_com *com = (struct edgx_com *)device;
+
+	if (com->ops->dma_err_isr)
+		return com->ops->dma_err_isr(com);
+
+	return IRQ_NONE;
 }

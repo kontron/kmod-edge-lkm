@@ -89,12 +89,7 @@ struct edgx_br {
 	spinlock_t		 lock; /* Sync. access to IRQ mask */
 	struct workqueue_struct	*owq;
 
-	void (*set_int_mask)(struct edgx_br *br, u16 mask);
-	void (*clr_int_mask)(struct edgx_br *br, u16 mask);
-	u16  (*get_int_mask)(struct edgx_br *br);
-	u16  (*get_int_stat)(struct edgx_br *br);
-	void (*clr_int_stat)(struct edgx_br *br, u16 stat);
-
+	struct edgx_br_irq	*irq;
 	struct vpd *vpd;
 };
 
@@ -108,13 +103,13 @@ unsigned int mgmttc = -1;
 int csrating;
 char *syncmode = "1AS";
 
-module_param(netif, charp, 0000);
+module_param(netif, charp, 0444);
 MODULE_PARM_DESC(netif, "Bridge- and End Station tunnelling network interface (xMII connectivity only!)");
-module_param(mgmttc, uint, 0000);
+module_param(mgmttc, uint, 0444);
 MODULE_PARM_DESC(mgmttc, "Management Traffic Class; defaults to highest available traffic class");
-module_param(syncmode, charp, 0000);
+module_param(syncmode, charp, 0444);
 MODULE_PARM_DESC(syncmode, "Time synchronization mode; IEEE 802.1AS (\"1AS\" - default) or IEEE 1588 (\"1588\")");
-module_param(csrating, int, 0000);
+module_param(csrating, int, 0444);
 MODULE_PARM_DESC(csrating, "Clock-source rating; defaults to 0 (lowest rating)");
 
 /* list of instantiated bridges */
@@ -328,130 +323,177 @@ void edgx_br_pt_leave(struct edgx_br *br)
 	edgx_br_sysfs_update(br, false);
 }
 
-static void edgx_br_set_int_mask_v1(struct edgx_br *br, u16 mask)
-{
-	u16 rd_mask;
-	unsigned long irq_flags;
-
-	spin_lock_irqsave(&br->lock, irq_flags);
-
-	rd_mask = edgx_rd16(br->brmgmt, EDGX_BR_INT_MASK);
-	edgx_wr16(br->brmgmt, EDGX_BR_INT_MASK, rd_mask | mask);
-
-	spin_unlock_irqrestore(&br->lock, irq_flags);
-}
-
-static void edgx_br_clr_int_mask_v1(struct edgx_br *br, u16 mask)
-{
-	u16 rd_mask;
-	unsigned long irq_flags;
-
-	spin_lock_irqsave(&br->lock, irq_flags);
-
-	rd_mask = edgx_rd16(br->brmgmt, EDGX_BR_INT_MASK);
-	edgx_wr16(br->brmgmt, EDGX_BR_INT_MASK, rd_mask & ~mask);
-
-	spin_unlock_irqrestore(&br->lock, irq_flags);
-}
-
-static u16 edgx_br_get_int_mask_v1(struct edgx_br *br)
-{
-	return edgx_rd16(br->brmgmt, EDGX_BR_INT_MASK);
-}
-
-static void edgx_br_clr_int_stat_v1(struct edgx_br *br, u16 stat)
-{
-	edgx_wr16(br->brmgmt, EDGX_BR_INT_STAT, ~stat);
-}
-
-static u16 edgx_br_get_int_stat_v1(struct edgx_br *br)
-{
-	return edgx_rd16(br->brmgmt, EDGX_BR_INT_STAT);
-}
-
-static void edgx_br_set_int_mask_v2(struct edgx_br *br, u16 mask)
+void edgx_br_set_int_mask(struct edgx_br *br, u16 mask)
 {
 	edgx_wr16(br->brmgmt, EDGX_BR_INT_MASK_SET, mask);
 }
 
-static void edgx_br_clr_int_mask_v2(struct edgx_br *br, u16 mask)
+void edgx_br_clr_int_mask(struct edgx_br *br, u16 mask)
 {
 	edgx_wr16(br->brmgmt, EDGX_BR_INT_MASK_CLR, ~mask);
 }
 
-static u16 edgx_br_get_int_mask_v2(struct edgx_br *br)
+u16 edgx_br_get_int_mask(struct edgx_br *br)
 {
 	return edgx_rd16(br->brmgmt, EDGX_BR_INT_MASK_SET);
 }
 
-static void edgx_br_clr_int_stat_v2(struct edgx_br *br, u16 stat)
-{
-	edgx_wr16(br->brmgmt, EDGX_BR_INT_STAT_2, ~stat);
-}
-
-static u16 edgx_br_get_int_stat_v2(struct edgx_br *br)
-{
-	return edgx_rd16(br->brmgmt, EDGX_BR_INT_STAT_2);
-}
-
-void edgx_br_set_int_mask(struct edgx_br *br, u16 mask)
-{
-	br->set_int_mask(br, mask);
-}
-
-void edgx_br_clr_int_mask(struct edgx_br *br, u16 mask)
-{
-	br->clr_int_mask(br, mask);
-}
-
-u16 edgx_br_get_int_mask(struct edgx_br *br)
-{
-	return br->get_int_mask(br);
-}
-
 void edgx_br_clr_int_stat(struct edgx_br *br, u16 stat)
 {
-	br->clr_int_stat(br, stat);
+	edgx_wr16(br->brmgmt, EDGX_BR_INT_STAT, ~stat);
 }
 
 u16 edgx_br_get_int_stat(struct edgx_br *br)
 {
-	return br->get_int_stat(br);
+	return edgx_rd16(br->brmgmt, EDGX_BR_INT_STAT);
+}
+
+void edgx_br_irq_enable(struct edgx_br *br, enum edgx_br_irq_nr irq)
+{
+	if (br->irq->trig == EDGX_IRQ_LEVEL_TRIG)
+		edgx_br_set_int_mask(br, BIT(irq));
+}
+
+void edgx_br_irq_disable(struct edgx_br *br, enum edgx_br_irq_nr irq)
+{
+	if (br->irq->trig == EDGX_IRQ_LEVEL_TRIG)
+		edgx_br_clr_int_mask(br, BIT(irq));
+}
+
+static irqreturn_t edgx_br_single_isr(int irq, void *device)
+{
+	u16 intmask, intstat;
+	struct edgx_br *br = (struct edgx_br *)device;
+
+	intmask = edgx_br_get_int_mask(br);
+	if (!intmask)
+		return IRQ_NONE;
+
+	intstat = edgx_br_get_int_stat(br);
+	if (!intstat)
+		return IRQ_NONE;
+
+	edgx_dbg("ISR m0x%x s0x%x.\n", intmask, intstat);
+
+	if ((intmask & BIT(EDGX_IRQ_NR_TS_TX)) &&
+	    (intstat & BIT(EDGX_IRQ_NR_TS_TX)))
+			edgx_com_ts_tx_isr(irq, br->com);
+
+	if ((intmask & BIT(EDGX_IRQ_NR_DMA_TX)) &&
+	    (intstat & BIT(EDGX_IRQ_NR_DMA_TX)))
+			edgx_com_dma_tx_isr(irq, br->com);
+
+	if ((intmask & BIT(EDGX_IRQ_NR_DMA_RX)) &&
+	    (intstat & BIT(EDGX_IRQ_NR_DMA_RX)))
+			edgx_com_dma_rx_isr(irq, br->com);
+
+	if ((intmask & BIT(EDGX_IRQ_NR_DMA_ERR)) &&
+	    (intstat & BIT(EDGX_IRQ_NR_DMA_ERR)))
+			edgx_com_dma_err_isr(irq, br->com);
+
+	return IRQ_HANDLED;
+}
+
+
+static int edgx_irq_init(struct edgx_br *br)
+{
+	int ret;
+	u16 intmask;
+
+	if (br->irq->shared) {
+		ret = request_irq(br->irq->irq_vec[0], &edgx_br_single_isr,
+				  IRQF_SHARED, dev_name(br->pdev), br);
+		if (ret) {
+			edgx_err("request_irq failed! ret=%d, irq=%d\n",
+				 ret, br->irq->irq_vec[0]);
+			goto out_err_init_single;
+		}
+	} else {
+		ret = request_irq(br->irq->irq_vec[EDGX_IRQ_NR_TS_TX],
+				  &edgx_com_ts_tx_isr,
+				  0, dev_name(br->pdev), br->com);
+		if (ret) {
+			edgx_err("request_irq failed! ret=%d, irq=%d\n",
+				 ret, br->irq->irq_vec[EDGX_IRQ_NR_TS_TX]);
+			goto out_err_init_ts_tx;
+		}
+
+		ret = request_irq(br->irq->irq_vec[EDGX_IRQ_NR_DMA_TX],
+				  &edgx_com_dma_tx_isr,
+				  0, dev_name(br->pdev), br->com);
+		if (ret) {
+			edgx_err("request_irq failed! ret=%d, irq=%d\n",
+				 ret, br->irq->irq_vec[EDGX_IRQ_NR_DMA_TX]);
+			goto out_err_init_dma_tx;
+		}
+
+		ret = request_irq(br->irq->irq_vec[EDGX_IRQ_NR_DMA_RX],
+				  &edgx_com_dma_rx_isr,
+				  0, dev_name(br->pdev), br->com);
+		if (ret) {
+			edgx_err("request_irq failed! ret=%d, irq=%d\n",
+				 ret, br->irq->irq_vec[EDGX_IRQ_NR_DMA_RX]);
+			goto out_err_init_dma_rx;
+		}
+
+		ret = request_irq(br->irq->irq_vec[EDGX_IRQ_NR_DMA_ERR],
+				  &edgx_com_dma_err_isr,
+				  0, dev_name(br->pdev), br->com);
+		if (ret) {
+			edgx_err("request_irq failed! ret=%d, irq=%d\n",
+				 ret, br->irq->irq_vec[EDGX_IRQ_NR_DMA_ERR]);
+			goto out_err_init_dma_err;
+		}
+	}
+
+	edgx_br_clr_int_mask(br, ~(u16)0U);
+	intmask = BIT(EDGX_IRQ_NR_TS_TX) | BIT(EDGX_IRQ_NR_DMA_TX) |
+		  BIT(EDGX_IRQ_NR_DMA_RX) | BIT(EDGX_IRQ_NR_DMA_ERR);
+	edgx_br_clr_int_stat(br, intmask);
+	edgx_br_set_int_mask(br, intmask);
+
+	return 0;
+
+out_err_init_dma_err:
+	free_irq(br->irq->irq_vec[EDGX_IRQ_NR_DMA_RX], br->com);
+out_err_init_dma_rx:
+	free_irq(br->irq->irq_vec[EDGX_IRQ_NR_DMA_TX], br->com);
+out_err_init_dma_tx:
+	free_irq(br->irq->irq_vec[EDGX_IRQ_NR_TS_TX], br->com);
+out_err_init_ts_tx:
+out_err_init_single:
+	return ret;
+}
+
+static void edgx_irq_shutdown(struct edgx_br *br)
+{
+	if (br->irq->shared) {
+		free_irq(br->irq->irq_vec[0], br);
+		return;
+	}
+	free_irq(br->irq->irq_vec[EDGX_IRQ_NR_TS_TX], br->com);
+	free_irq(br->irq->irq_vec[EDGX_IRQ_NR_DMA_TX], br->com);
+	free_irq(br->irq->irq_vec[EDGX_IRQ_NR_DMA_RX], br->com);
+	free_irq(br->irq->irq_vec[EDGX_IRQ_NR_DMA_ERR], br->com);
 }
 
 static int edgx_probe_bridge(struct edgx_br *br)
 {
 	const struct edgx_ifdesc *ifd;
-	const struct edgx_ifreq ifreq_mgmt_v1 = {.id = AC_MGMT_ID, .v_maj = 1};
-	const struct edgx_ifreq ifreq_mgmt_v2 = {.id = AC_MGMT_ID, .v_maj = 2};
 	const struct edgx_ifreq ifreq_param = {.id = AC_PARAM_ID, .v_maj = 1};
+	const struct edgx_ifreq ifreq_mgmt = {.id = AC_MGMT_ID, .v_maj = 3};
 	int err;
 
 	ifd = edgx_ac_get_if(&ifreq_param);
 	if (!ifd)
 		return -ENODEV;
+
 	br->brparam = ifd->iobase;
 
-	/* TODO: Temporary support of both ITF versions.
-	 * Remove this later on.
-	 */
-	ifd = edgx_ac_get_if(&ifreq_mgmt_v1);
-	if (ifd) {
-		br->set_int_mask = edgx_br_set_int_mask_v1;
-		br->clr_int_mask = edgx_br_clr_int_mask_v1;
-		br->get_int_mask = edgx_br_get_int_mask_v1;
-		br->clr_int_stat = edgx_br_clr_int_stat_v1;
-		br->get_int_stat = edgx_br_get_int_stat_v1;
-	} else {
-		ifd = edgx_ac_get_if(&ifreq_mgmt_v2);
-		if (!ifd)
-			return -ENODEV;
-		br->set_int_mask = edgx_br_set_int_mask_v2;
-		br->clr_int_mask = edgx_br_clr_int_mask_v2;
-		br->get_int_mask = edgx_br_get_int_mask_v2;
-		br->clr_int_stat = edgx_br_clr_int_stat_v2;
-		br->get_int_stat = edgx_br_get_int_stat_v2;
-	}
+	ifd = edgx_ac_get_if(&ifreq_mgmt);
+	if (!ifd)
+		return -ENODEV;
+
 	/*Address: SWITCH General switch configuration registers*/
 	br->brmgmt = ifd->iobase;
 	/* Trigger Reset @ SWITCH+0x10[15] */
@@ -464,10 +506,12 @@ static int edgx_probe_bridge(struct edgx_br *br)
 	/* Enable PTP timestamping */
 	edgx_set16(br->brmgmt, EDGX_BR_GEN_REG, 13, 11, 6);
 
+	edgx_info("Initializing brfdb...\n");
 	err = edgx_brfdb_init(br, br->brmgmt, &br->fdb);
 	if (err)
 		goto out_fdb;
 
+	edgx_info("Initializing vlan...\n");
 	err = edgx_br_init_vlan(br, br->brmgmt, &br->vlan);
 	if (err)
 		goto out_vlan;
@@ -752,7 +796,8 @@ static void edgx_shutdown_bridge(struct edgx_br *br)
 }
 
 int edgx_br_probe_one(unsigned int br_id, struct device *dev,
-		      void *base, int irq, struct edgx_br **br_ret,
+		      void *base, struct edgx_br_irq *irq,
+		      struct edgx_br **br_ret,
 		      struct vpd *vpd)
 {
 	int ret;
@@ -770,8 +815,8 @@ int edgx_br_probe_one(unsigned int br_id, struct device *dev,
 	br->bridge.dev   = NULL;
 	br->bridge.refs  = 0;
 	br->hw.id        = br_id;
+	br->irq		 = irq;
 	br->vpd          = vpd;
-
 
 	spin_lock_init(&br->lock);
 	if (tsnic_vpd_eth_hw_addr(br->vpd, br->hw.base_mac)) {
@@ -802,7 +847,7 @@ int edgx_br_probe_one(unsigned int br_id, struct device *dev,
 	if (ret)
 		goto out_sysfs;
 
-	ret = edgx_com_probe(br, netif, dev_name(dev), irq, &br->com);
+	ret = edgx_com_probe(br, netif, &br->com, br->brmgmt);
 	if (ret)
 		goto out_com;
 
@@ -839,6 +884,10 @@ int edgx_br_probe_one(unsigned int br_id, struct device *dev,
 	if (ret && ret != -ENODEV)
 		goto out_frer;
 
+	ret = edgx_irq_init(br);
+	if (ret)
+		goto out_irq;
+
 	list_add_tail(&br->entry, &br_list);
 	*br_ret = br;
 	edgx_shutdown_ac();
@@ -846,6 +895,8 @@ int edgx_br_probe_one(unsigned int br_id, struct device *dev,
 	edgx_br_info(br, "Setup Bridge %d ... done\n", br_id);
 	return 0;
 
+out_irq:
+	edgx_shutdown_frer(br->frer);
 out_frer:
 	edgx_shutdown_sid(br->sid);
 out_sid:
@@ -880,6 +931,7 @@ void edgx_br_shutdown(struct edgx_br *br)
 	if (!br)
 		return;
 
+	edgx_irq_shutdown(br);
 	edgx_shutdown_frer(br->frer);
 	edgx_shutdown_sid(br->sid);
 	edgx_shutdown_psfp(br->psfp);

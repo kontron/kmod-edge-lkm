@@ -34,7 +34,6 @@
 struct edgx_com_xmii {
 	struct edgx_com		 com;
 	struct net_device	*net;
-	struct edgx_com_ts	 ts;
 };
 
 #define edgx_com_to_xmii(_com) container_of(_com, struct edgx_com_xmii, com)
@@ -59,7 +58,7 @@ static netdev_tx_t edgx_com_xmii_xmit(struct edgx_com *com, struct sk_buff *skb,
 			return ret;
 	}
 
-	skb = edgx_com_ts_xmit(&xmii->ts, skb, ptcom);
+	skb = edgx_com_ts_xmit(&com->ts, skb, ptcom);
 
 	skb_trailer = skb_put(skb, COM_TRAILER_LEN);
 	skb_trailer[COM_PORT_IDX]  = ptcom;
@@ -97,27 +96,11 @@ static rx_handler_result_t edgx_com_xmii_rx(struct sk_buff **pskb)
 	if (skb->ip_summed == CHECKSUM_COMPLETE)
 		skb->ip_summed = CHECKSUM_NONE;
 
-	edgx_com_ts_rx(&xmii->ts, skb, ptcom);
+	edgx_com_ts_rx(&xmii->com.ts, skb, ptcom);
 
 	edgx_com_rx_dispatch(&xmii->com, skb, ptcom, flags);
 
 	return RX_HANDLER_CONSUMED;
-}
-
-static int edgx_com_xmii_ts_cfg_get(struct edgx_com *com, ptcom_t ptcom,
-				    struct ifreq *ifr)
-{
-	struct edgx_com_xmii *xmii = edgx_com_to_xmii(com);
-
-	return edgx_com_ts_cfg_get(&xmii->ts, ptcom, ifr);
-}
-
-static int edgx_com_xmii_ts_cfg_set(struct edgx_com *com, ptcom_t ptcom,
-				    struct ifreq *ifr)
-{
-	struct edgx_com_xmii *xmii = edgx_com_to_xmii(com);
-
-	return edgx_com_ts_cfg_set(&xmii->ts, ptcom, ifr);
 }
 
 static void edgx_com_xmii_shutdown(struct edgx_com *com)
@@ -129,38 +112,47 @@ static void edgx_com_xmii_shutdown(struct edgx_com *com)
 	dev_set_promiscuity(xmii->net, -1);
 	netdev_rx_handler_unregister(xmii->net);
 	rtnl_unlock();
-	edgx_com_ts_shutdown(&xmii->ts);
+	edgx_com_release(com);
 	kfree(xmii);
+}
+
+static bool edgx_com_xmii_multiqueue_support(struct edgx_com *com, u8 *num_tx_queues, u8 *num_rx_queues)
+{
+	struct edgx_com_xmii *xmii = edgx_com_to_xmii(com);
+
+	/* No support for multiple queues for xmii */
+	if (num_tx_queues)
+		*num_tx_queues = 1;
+	if (num_rx_queues)
+		*num_rx_queues = 1;
+
+	return xmii ? false : true;
 }
 
 static struct edgx_com_ops edgx_com_xmii_ops = {
 	.shutdown	= edgx_com_xmii_shutdown,
 	.xmit		= edgx_com_xmii_xmit,
-	.hwts_set	= edgx_com_xmii_ts_cfg_set,
-	.hwts_get	= edgx_com_xmii_ts_cfg_get,
+	.multiqueue_support = edgx_com_xmii_multiqueue_support,
 };
 
-int edgx_com_xmii_init(struct edgx_com_xmii *xmii, struct edgx_br *br,
-		       const char *drv_name, int irq,
-		       ptid_t mgmt_pt, struct net_device *net)
+static int edgx_com_xmii_init(struct edgx_com_xmii *xmii, struct edgx_br *br,
+			      ptid_t mgmt_pt, struct net_device *net,
+			      edgx_io_t *mngmt_base)
 {
 	int ret;
 
-	edgx_com_init(&xmii->com, br, &edgx_com_xmii_ops, mgmt_pt);
+	ret = edgx_com_init(&xmii->com, br, &edgx_com_xmii_ops, mgmt_pt,
+			    mngmt_base);
+	if (ret)
+		return ret;
 
 	xmii->net = net;
-
-	ret = edgx_com_ts_init(&xmii->ts, drv_name, irq, br);
-	if (ret < 0) {
-		edgx_err("COM XMII: Cannot initialize port timestamping\n");
-		return ret;
-	}
 
 	rtnl_lock();
 	netdev_rx_handler_register(net, edgx_com_xmii_rx, xmii);
 	dev_set_promiscuity(net, 1);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
 	dev_open(net);
 #else
 	dev_open(net, NULL);
@@ -169,8 +161,8 @@ int edgx_com_xmii_init(struct edgx_com_xmii *xmii, struct edgx_br *br,
 	return 0;
 }
 
-int edgx_com_xmii_probe(struct edgx_br *br, int irq, const char *ifname,
-			const char *drv_name, struct edgx_com **com)
+int edgx_com_xmii_probe(struct edgx_br *br, const char *ifname,
+			edgx_io_t *mngmt_base, struct edgx_com **com)
 {
 	struct edgx_com_xmii	*xmii;
 	struct net_device	*net;
@@ -205,7 +197,7 @@ int edgx_com_xmii_probe(struct edgx_br *br, int irq, const char *ifname,
 	if (!xmii)
 		return -ENOMEM;
 
-	ret = edgx_com_xmii_init(xmii, br, drv_name, irq, mgmt_pt, net);
+	ret = edgx_com_xmii_init(xmii, br, mgmt_pt, net, mngmt_base);
 	if (ret) {
 		kfree(xmii);
 		return ret;

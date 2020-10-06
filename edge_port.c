@@ -1,3 +1,4 @@
+
 // SPDX-License-Identifier: GPL-2.0
 /* TTTech EDGE/DE-IP Linux driver
  * Copyright(c) 2018 TTTech Computertechnik AG.
@@ -27,6 +28,7 @@
 #include <linux/if_bridge.h>
 #include <linux/netdevice.h>
 
+
 #include "edge_ac.h"
 #include "edge_com.h"
 #include "edge_br_vlan.h"
@@ -46,7 +48,6 @@
 struct edgx_ptfillqu {
 	/* Protect the control register for buffer fill level capture */
 	spinlock_t   lock;
-	//TODO delete if not needed statw_t                    *data;
 };
 
 struct edgx_pt {
@@ -72,7 +73,7 @@ struct edgx_pt {
 #define _PT_STP_FWD       0x0
 #define _PT_STP_LEARN     0x1
 #define _PT_STP_DISABLED  0x2
-#define _MAX_PRIO_VAL	  0x7
+#define _MAX_PRIO_VAL	  (EDGX_BR_NUM_PCP - 1)
 #define _TX8_DEF_VAL	  0x76543201
 #define _PRIO_REGEN_LO	  0x16
 #define _PRIO_REGEN_HI	  0x18
@@ -249,83 +250,197 @@ static struct edgx_pt_ipo ipo_null = {0x0, 0x0, 0x0, 0x0,
 #define _IPO_NONE_ENT_START (_IPO_ALL_ENT + 1)
 #define _IPO_NRULES         (16)
 
-#define _IPO_REG_CFG0       0x0
-#define _IPO_REG_FWD        0x2
-#define _IPO_REG_MIRR       0x4
-#define _IPO_REG_CFG1       0x6
+#define _IPO_REG_CMD	    0x0
+#define _IPO_REG_CFG0       0x10
+#define _IPO_REG_FWD        0x12
+#define _IPO_REG_MIRR       0x14
+#define _IPO_REG_CFG1       0x16
+#define _IPO_REG_ETH_0      0x18
+#define _IPO_REG_ETH_1      0x1A
+#define _IPO_REG_ETH_2      0x1C
+
+#define _IPO_CMD_CFG0	    (0x1)
+#define _IPO_CMD_FWD        (0x2)
+#define _IPO_CMD_MIRR       (0x3)
+#define _IPO_CMD_CFG1       (0x4)
+#define _IPO_CMD_ETH_0      (0x5)
+#define _IPO_CMD_ETH_1      (0x6)
+#define _IPO_CMD_ETH_2      (0x7)
+
+#define _IPO_CMD_WRITE	    (1<<14)
+#define _IPO_CMD_READ	    (0<<14)
+#define _IPO_CMD_TRANSFER   (1<<15)
+
 
 static inline void edgx_pt_ipo_set_mac(edgx_io_t *ipo_rbase, u8 *mac)
 {
-	edgx_set16(ipo_rbase, 0x8, 7, 0, mac[0]);
-	edgx_set16(ipo_rbase, 0x8, 15, 8, mac[1]);
-	edgx_set16(ipo_rbase, 0xA, 7, 0, mac[2]);
-	edgx_set16(ipo_rbase, 0xA, 15, 8, mac[3]);
-	edgx_set16(ipo_rbase, 0xC, 7, 0, mac[4]);
-	edgx_set16(ipo_rbase, 0xC, 15, 8, mac[5]);
+	u16 reg;
+
+	edgx_set16(ipo_rbase, _IPO_REG_ETH_0, 7, 0, mac[0]);
+	edgx_set16(ipo_rbase, _IPO_REG_ETH_0, 15, 8, mac[1]);
+	edgx_set16(ipo_rbase, _IPO_REG_ETH_1, 7, 0, mac[2]);
+	edgx_set16(ipo_rbase, _IPO_REG_ETH_1, 15, 8, mac[3]);
+	edgx_set16(ipo_rbase, _IPO_REG_ETH_2, 7, 0, mac[4]);
+	edgx_set16(ipo_rbase, _IPO_REG_ETH_2, 15, 8, mac[5]);
 }
 
 static inline void edgx_pt_ipo_init_single(edgx_io_t *ipo_rbase,
-					   struct edgx_pt_ipo *ipo)
+					   struct edgx_pt_ipo *ipo,
+					   u8 entry)
 {
+	u16 reg;
+	/* Read the value from registers */
+	edgx_wr16(ipo_rbase, _IPO_REG_CMD,
+		 (entry | _IPO_CMD_READ | _IPO_CMD_TRANSFER));
+	/* Sleep and then wait until flags are cleared by HW. */
+	usleep_range(300, 400);
+	do {
+		reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
+	} while (reg);
 	edgx_wr16(ipo_rbase, _IPO_REG_CFG0, ipo->cfg0);
 	edgx_wr16(ipo_rbase, _IPO_REG_FWD,  ipo->fwd);
 	edgx_wr16(ipo_rbase, _IPO_REG_MIRR, ipo->mirror);
 	edgx_wr16(ipo_rbase, _IPO_REG_CFG1, ipo->cfg1);
-
 	edgx_pt_ipo_set_mac(ipo_rbase, ipo->mac);
+}
+
+static inline u16 edgx_get_tc_mgmtraffic(struct edgx_br *br)
+{
+	/* If traffic class for management traffic isn't set via a correct
+	 * value in module parameter mgmttc, the highest traffic class is
+	 * used.
+	 */
+	return(min((unsigned int)edgx_br_get_generic(br, BR_GX_QUEUES) - 1,
+			mgmttc));
 }
 
 static void edgx_pt_ipo_init(struct edgx_pt *pt, ptid_t mgmt_ptid)
 {
 	unsigned int entry;
 	edgx_io_t *ipo_rbase;
-	u16 mtc = min((unsigned int)edgx_br_get_generic(pt->parent,
-							BR_GX_QUEUES) - 1,
-		      mgmttc);
+	u16 reg;
+	u16 mtc = edgx_get_tc_mgmtraffic(pt->parent);
 
 	for (entry = 0; entry < ARRAY_SIZE(ipo_mgmt); entry++) {
-		ipo_rbase = _IPO_RBASE(pt->iobase, entry);
-		edgx_pt_ipo_init_single(ipo_rbase, &ipo_mgmt[entry]);
+		ipo_rbase = _IPO_BASE(pt->iobase);
+		edgx_pt_ipo_init_single(ipo_rbase, &ipo_mgmt[entry], entry);
 		/* Mgmt traffic uses highest traffic class by default */
 		if (mtc > 4)
-			edgx_set16(ipo_rbase, 0x0, 15, 15, mtc >> 2);
-		edgx_set16(ipo_rbase, 0x0, 13, 12, (mtc & 0x3));
+			edgx_set16(ipo_rbase, _IPO_REG_CFG0, 15, 15, mtc >> 2);
+		edgx_set16(ipo_rbase, _IPO_REG_CFG0, 13, 12, (mtc & 0x3));
 
 		/* Need to set FWD and MIRROR, so that mgmt frames also arrive
 		 * when in blocking state
 		 */
-		edgx_wr16(ipo_rbase, 0x2, BIT(mgmt_ptid));
-		edgx_wr16(ipo_rbase, 0x4, BIT(mgmt_ptid));
+		edgx_wr16(ipo_rbase, _IPO_REG_FWD, BIT(mgmt_ptid));
+		edgx_wr16(ipo_rbase, _IPO_REG_MIRR, BIT(mgmt_ptid));
+		/* Write the values to IP using indirect access */
+		edgx_wr16(ipo_rbase, _IPO_REG_CMD,
+			  (entry | _IPO_CMD_WRITE | _IPO_CMD_TRANSFER));
+		/* Sleep and wait until flags are cleared by HW */
+		usleep_range(300, 400);
+		do {
+			reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
+		} while (reg);
 	}
 
 	/* Setup individual(self)-MAC-rule for port */
-	ipo_rbase = _IPO_RBASE(pt->iobase, _IPO_SELF_ENT);
-	edgx_pt_ipo_init_single(ipo_rbase, &ipo_self);
+	ipo_rbase = _IPO_BASE(pt->iobase);
+	/* Read values for _IPO_SELF_ENT rule */
+	edgx_wr16(ipo_rbase, _IPO_REG_CMD,
+		  (_IPO_SELF_ENT |
+		   _IPO_CMD_READ |
+		   _IPO_CMD_TRANSFER));
+	/* Sleep and wait until flags are cleared by HW */
+	usleep_range(300, 400);
+	do {
+		reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
+	} while (reg);
+
+	edgx_pt_ipo_init_single(ipo_rbase, &ipo_self, _IPO_SELF_ENT);
 	edgx_pt_ipo_set_mac(ipo_rbase, pt->netdev->dev_addr);
 	/* Need to set FWD and MIRROR, so that mgmt frames also arrive
 	 * when port is in blocking state
 	 */
-	edgx_wr16(ipo_rbase, 0x2, BIT(mgmt_ptid));
-	edgx_wr16(ipo_rbase, 0x4, BIT(mgmt_ptid));
+	edgx_wr16(ipo_rbase, _IPO_REG_FWD, BIT(mgmt_ptid));
+	edgx_wr16(ipo_rbase, _IPO_REG_MIRR, BIT(mgmt_ptid));
+	edgx_wr16(ipo_rbase, _IPO_REG_CMD,
+		  (_IPO_SELF_ENT |
+		   _IPO_CMD_WRITE |
+		   _IPO_CMD_TRANSFER));
+	/* Sleep and then wait until flags are cleared by HW */
+	usleep_range(300, 400);
+	do {
+		reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
+	} while (reg);
 
 	/* Setup all-MAC rule for port */
-	ipo_rbase = _IPO_RBASE(pt->iobase, _IPO_ALL_ENT);
-	edgx_pt_ipo_init_single(ipo_rbase, &ipo_all);
+	ipo_rbase = _IPO_BASE(pt->iobase);
+	 /* Read values for _IPO_ALL_ENT rule */
+	edgx_wr16(ipo_rbase, _IPO_REG_CMD,
+		  (_IPO_ALL_ENT |
+		   _IPO_CMD_READ |
+		   _IPO_CMD_TRANSFER));
+	/* Sleep and then wait until flags are cleared by HW */
+	usleep_range(300, 400);
+	do {
+		reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
+	} while (reg);
+
+	edgx_pt_ipo_init_single(ipo_rbase, &ipo_all, _IPO_ALL_ENT);
 	/* don't allow forwarding to self, no allowed for bridges! */
-	edgx_set16(ipo_rbase, 0x2, pt->ptid, pt->ptid, 0);
+	edgx_set16(ipo_rbase, _IPO_REG_FWD, pt->ptid, pt->ptid, 0);
+	edgx_wr16(ipo_rbase, _IPO_REG_CMD,
+		  (_IPO_ALL_ENT |
+		   _IPO_CMD_WRITE |
+		   _IPO_CMD_TRANSFER));
+	/* Sleep and then wait until flags are cleared by HW */
+	usleep_range(300, 400);
+	do {
+		reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
+	} while (reg);
 
 	/* Clear out the rest using the none-rule */
 	for (entry = _IPO_NONE_ENT_START; entry < _IPO_NRULES; entry++) {
-		ipo_rbase = _IPO_RBASE(pt->iobase, entry);
-		edgx_pt_ipo_init_single(ipo_rbase, &ipo_null);
+		ipo_rbase = _IPO_BASE(pt->iobase);
+		/* Read values for _IPO_ALL_ENT rule */
+		edgx_wr16(ipo_rbase, _IPO_REG_CMD,
+			  (entry | _IPO_CMD_READ | _IPO_CMD_TRANSFER));
+		/* Sleep and then wait until flags are cleared by HW */
+		usleep_range(300, 400);
+		do {
+			reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
+		} while (reg);
+		edgx_pt_ipo_init_single(ipo_rbase, &ipo_null, entry);
+		/* Write values for _IPO_NONE rules */
+		/* Read values for _IPO_ALL_ENT rule */
+		edgx_wr16(ipo_rbase, _IPO_REG_CMD,
+			  (entry | _IPO_CMD_READ | _IPO_CMD_TRANSFER));
+		/* Sleep and then wait until flags are cleared by HW */
+		usleep_range(300, 400);
+		do {
+			reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
+		} while (reg);
 	}
 }
 
 static ptid_t edgx_pt_ipo_get_mirror(struct edgx_pt *pt)
 {
+	u16 reg;
 	ptid_t mgmt_ptid = edgx_com_get_mgmt_ptid(edgx_br_get_com(pt2br(pt)));
-	edgx_io_t *ipo_rbase = _IPO_RBASE(pt->iobase, 0);
-	u16 mirr_cfg = edgx_rd16(ipo_rbase, _IPO_REG_MIRR) ^ BIT(mgmt_ptid);
+	edgx_io_t *ipo_rbase = _IPO_BASE(pt->iobase);
+
+	edgx_wr16(ipo_rbase, _IPO_REG_CMD,
+		 (0 | _IPO_CMD_READ | _IPO_CMD_TRANSFER));
+	/* Sleep and then wait until flags are cleared by HW */
+	usleep_range(300, 400);
+	do {
+		reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
+	} while (reg);
+
+	u16 mirr_cfg = edgx_rd16(ipo_rbase, _IPO_REG_MIRR);
+
+	mirr_cfg = mirr_cfg ^ BIT(mgmt_ptid);
 
 	return (mirr_cfg) ? ffs(mirr_cfg) - 1 : -1;
 }
@@ -335,6 +450,7 @@ static int edgx_pt_ipo_set_mirror(struct edgx_pt *pt, ptid_t mirr_ptid)
 	unsigned int i;
 	ptid_t mgmt_ptid = edgx_com_get_mgmt_ptid(edgx_br_get_com(pt2br(pt)));
 	u16 mirr_cfg = BIT(mgmt_ptid) | ((mirr_ptid < 0) ? 0 : BIT(mirr_ptid));
+	u16 reg;
 
 	if (mirr_ptid == edgx_pt_get_id(pt) || mirr_ptid == mgmt_ptid) {
 		edgx_pt_err(pt, "Cannot mirror management port or to self.\n");
@@ -342,9 +458,23 @@ static int edgx_pt_ipo_set_mirror(struct edgx_pt *pt, ptid_t mirr_ptid)
 	}
 
 	for (i = 0; i < _IPO_NRULES; i++) {
-		edgx_io_t *ipo_rbase = _IPO_RBASE(pt->iobase, i);
+		edgx_io_t *ipo_rbase = _IPO_BASE(pt->iobase);
 
+		edgx_wr16(ipo_rbase, _IPO_REG_CMD,
+			  (i | _IPO_CMD_WRITE | _IPO_CMD_TRANSFER));
+		/* Sleep and then wait until flags are cleared by HW */
+		usleep_range(300, 400);
+		do {
+			reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
+		} while (reg);
 		edgx_wr16(ipo_rbase, _IPO_REG_MIRR, mirr_cfg);
+		edgx_wr16(ipo_rbase, _IPO_REG_CMD,
+			  (i | _IPO_CMD_WRITE | _IPO_CMD_TRANSFER));
+		/* Sleep and then wait until flags are cleared by HW */
+		usleep_range(300, 400);
+		do {
+			reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
+		} while (reg);
 	}
 	return 0;
 }
@@ -546,18 +676,21 @@ static ssize_t prio_regen_tbl_write(struct file *filp, struct kobject *kobj,
 				    struct bin_attribute *bin_attr,
 				    char *buf, loff_t ofs, size_t count)
 {
+	/* parameter buf contains value of priority
+	 * parameter ofs contains value of PCP */
 	loff_t idx = 0;
 	struct edgx_pt *pt = edgx_dev2pt(kobj_to_dev(kobj));
 	size_t reg_ofs;
 	int bithi, bitlo;
 
 	if (edgx_sysfs_tbl_params(ofs, count, sizeof(u8), &idx) ||
-	    idx > (edgx_br_get_generic(edgx_pt_get_br(pt), BR_GX_QUEUES) - 1) ||
+	    idx > _MAX_PRIO_VAL ||
 	    ((u8 *)buf)[0] > _MAX_PRIO_VAL)
 		return -EINVAL;
 
 	get_tc_prio_params(idx, _TYPE_PRIO_REGEN, &reg_ofs, &bithi, &bitlo);
 	edgx_set16(pt->iobase, reg_ofs, bithi, bitlo, ((u8 *)buf)[0]);
+	printk("%s: PCP: %d, priority: %d\n", __func__, (u8)idx), ((u8 *)buf)[0];
 
 	return count;
 }
@@ -566,19 +699,21 @@ static ssize_t traffic_class_tbl_write(struct file *filp, struct kobject *kobj,
 				       struct bin_attribute *bin_attr,
 				       char *buf, loff_t ofs, size_t count)
 {
+	/* parameter buf contains value of traffic class
+	 * parameter ofs contains value of priority*/
 	loff_t idx = 0;
 	struct edgx_pt *pt = edgx_dev2pt(kobj_to_dev(kobj));
 	size_t reg_ofs;
 	int bithi, bitlo;
 
 	if (edgx_sysfs_tbl_params(ofs, count, sizeof(u8), &idx) ||
-	    idx > (edgx_br_get_generic(edgx_pt_get_br(pt), BR_GX_QUEUES) - 1) ||
-	    ((u8 *)buf)[0] > (edgx_br_get_generic(edgx_pt_get_br(pt),
-			      BR_GX_QUEUES) - 1))
+	    idx > _MAX_PRIO_VAL ||
+	    ((u8 *)buf)[0] > (edgx_br_get_generic(edgx_pt_get_br(pt), BR_GX_QUEUES) - 1))
 		return -EINVAL;
 
 	get_tc_prio_params(idx, _TYPE_QUEUE_TBL, &reg_ofs, &bithi, &bitlo);
 	edgx_set16(pt->iobase, reg_ofs, bithi, bitlo, ((u8 *)buf)[0]);
+	printk("%s: priority: %d, traffic class: %d\n", __func__, (u8)idx, ((u8 *)buf)[0]);
 
 	return count;
 }
@@ -587,17 +722,21 @@ static ssize_t prio_regen_tbl_read(struct file *filp, struct kobject *kobj,
 				   struct bin_attribute *bin_attr,
 				   char *buf, loff_t ofs, size_t count)
 {
+	/* parameter buf contains value of priority
+	 * parameter ofs contains value of PCP */
 	loff_t idx = 0;
 	struct edgx_pt *pt = edgx_dev2pt(kobj_to_dev(kobj));
 	size_t reg_ofs;
 	int bithi, bitlo;
 
 	if (edgx_sysfs_tbl_params(ofs, count, sizeof(u8), &idx) ||
-	    idx > (edgx_br_get_generic(edgx_pt_get_br(pt), BR_GX_QUEUES) - 1))
+	    idx > _MAX_PRIO_VAL)
 		return -EINVAL;
 
 	get_tc_prio_params(idx, _TYPE_PRIO_REGEN, &reg_ofs, &bithi, &bitlo);
 	((u8 *)buf)[0] = edgx_get16(pt->iobase, reg_ofs, bithi, bitlo);
+	edgx_dbg("%s: PCP: %d, priority: %d, port: %s\n", __func__, (u8)idx,
+			edgx_get16(pt->iobase, reg_ofs, bithi, bitlo), edgx_pt_get_name(pt));
 
 	return count;
 }
@@ -606,25 +745,29 @@ static ssize_t traffic_class_tbl_read(struct file *filp, struct kobject *kobj,
 				      struct bin_attribute *bin_attr,
 				      char *buf, loff_t ofs, size_t count)
 {
+	/* parameter buf contains value of traffic class
+	 * parameter ofs contains value of priority*/
 	loff_t idx = 0;
 	struct edgx_pt *pt = edgx_dev2pt(kobj_to_dev(kobj));
 	size_t reg_ofs;
 	int bithi, bitlo;
 
 	if (edgx_sysfs_tbl_params(ofs, count, sizeof(u8), &idx) ||
-	    idx > (edgx_br_get_generic(edgx_pt_get_br(pt), BR_GX_QUEUES) - 1))
+	    idx > _MAX_PRIO_VAL)
 		return -EINVAL;
 
 	get_tc_prio_params(idx, _TYPE_QUEUE_TBL, &reg_ofs, &bithi, &bitlo);
 	((u8 *)buf)[0] = edgx_get16(pt->iobase, reg_ofs, bithi, bitlo);
+	edgx_dbg("%s: priority: %d, traffic class: %d, port: %s\n", __func__, (u8)idx,
+			edgx_get16(pt->iobase, reg_ofs, bithi, bitlo), edgx_pt_get_name(pt));
 
 	return count;
 }
 
 EDGX_BIN_ATTR_RW(prio_regen_tbl,  "portUserPriorityRegenTable",
-		 EDGX_BR_MAX_TC * sizeof(u8));
+		EDGX_BR_NUM_PCP * sizeof(u8));
 EDGX_BIN_ATTR_RW(traffic_class_tbl,  "portTrafficClassTable",
-		 EDGX_BR_MAX_TC * sizeof(u8));
+		EDGX_BR_NUM_PCP * sizeof(u8));
 
 static struct attribute *ieee8021_bridge_attrs[] = {
 	&dev_attr_num_tcs.attr,
@@ -724,7 +867,7 @@ static struct attribute_group edgex_ext_group = {
 	.attrs = edgex_ext_attrs,
 };
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
 static int edgx_pt_attr_get(struct net_device *dev,
 			    struct switchdev_attr *attr)
 {
@@ -798,7 +941,7 @@ static int edgx_pt_obj_add(struct net_device *dev,
 		err = edgx_br_vlan_add_pt(edgx_br_get_vlan(pt2br(pt)),
 					  SWITCHDEV_OBJ_PORT_VLAN(obj), pt);
 		break;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 	case SWITCHDEV_OBJ_ID_PORT_MDB:
 	case SWITCHDEV_OBJ_ID_HOST_MDB: {
 		/* Ignore MDB objects to avoid kernel warning. */
@@ -869,7 +1012,7 @@ int edgx_pt_call_switchdev_notifiers(struct edgx_pt *pt, unsigned long type,
 
 	rtnl_lock();
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
 	r = call_switchdev_notifiers(type, pt->netdev, info);
 #else
 	r = call_switchdev_notifiers(type, pt->netdev, info, NULL);
@@ -926,14 +1069,34 @@ void edgx_pt_rcv(struct edgx_pt *pt, struct sk_buff *skb, ptflags_t flags)
 
 static int edgx_brpt_set_mac_addr(struct net_device *netdev, void *p)
 {
+	u16 reg;
 	struct edgx_pt *pt = net2pt(netdev);
 	struct sockaddr *addr = p;
-	edgx_io_t *ipo_rbase = _IPO_RBASE(pt->iobase, _IPO_SELF_ENT);
+	edgx_io_t *ipo_rbase = _IPO_BASE(pt->iobase);
+
+	edgx_wr16(ipo_rbase, _IPO_REG_CMD,
+		  (_IPO_SELF_ENT |
+		   _IPO_CMD_READ |
+		   _IPO_CMD_TRANSFER));
+	/* Sleep and then wait until flags are cleared again by chip. */
+	usleep_range(300, 400);
+	do {
+		reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
+	} while (reg);
 
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
 	edgx_pt_ipo_set_mac(ipo_rbase, addr->sa_data);
+	edgx_wr16(ipo_rbase, _IPO_REG_CMD,
+		  (_IPO_SELF_ENT |
+		   _IPO_CMD_WRITE |
+		   _IPO_CMD_TRANSFER));
+	/* Sleep and then wait until flags are cleared again by chip. */
+	usleep_range(300, 400);
+	do {
+		reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
+	} while (reg);
 	memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
 
 	return 0;
@@ -1133,7 +1296,7 @@ edgx_fdb_offload_notify(struct edgx_pt *pt,
 	info.addr = recv_info->addr;
 	info.vid = recv_info->vid;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
 	call_switchdev_notifiers(SWITCHDEV_FDB_OFFLOADED,
 				 pt->netdev, &info.info);
 #else
@@ -1146,7 +1309,7 @@ edgx_fdb_offload_notify(struct edgx_pt *pt,
 int edgx_pt_fdb_add(struct ndmsg *ndm, struct nlattr *tb[],
 		    struct net_device *netdev,
 		    const unsigned char *addr, u16 vid,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
 		    u16 flags)
 #else
 		    u16 flags,
@@ -1245,7 +1408,88 @@ static struct notifier_block edgx_netdev_nb __read_mostly = {
 	.notifier_call = edgx_netdev_event,
 };
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,3,0)
+int edgx_tc_setup(struct net_device *netdev, enum tc_setup_type type,
+		   void *type_data)
+{
+	struct edgx_pt *pt = net2pt(netdev);
+	struct edgx_com *com = edgx_br_get_com(pt->parent);
+	struct tc_mqprio_qopt *mqprio = type_data;
+	u8 num_tc, num_rx_queues, num_tx_queues;
+	int i;
+
+	edgx_pt_warn(pt, "edgx_tc_setup type:%d\n", type);
+
+	if ((type != TC_SETUP_QDISC_MQPRIO) ||
+	    (!edgx_multiqueue_support_get(com, &num_tx_queues, &num_rx_queues)))
+		return -EOPNOTSUPP;
+
+	mqprio->hw = TC_MQPRIO_HW_OFFLOAD_TCS;
+	num_tc = mqprio->num_tc;
+
+	edgx_pt_warn(pt, "edgx_tc_setup num_tc:%d\n", num_tc);
+
+	/* This is called by reset */
+	if (!num_tc) {
+		netdev_reset_tc(netdev);
+		netdev_set_num_tc(netdev, num_tc);
+		return 0;
+	}
+
+	/* Check if we have enough BD rings available to accommodate all TCs */
+	if (num_tc > num_tx_queues) {
+		netdev_err(netdev, "Max %d traffic classes supported\n",
+			   num_tx_queues);
+		return -EINVAL;
+	}
+
+
+	/* Do not change rx queues */
+	netdev_set_num_tc(netdev, num_tc);
+
+	// TODO: netdev_set_prio_tc_map and netdev_get_prio_tc_map for stats and q selection?
+	// netdev_set_prio_tc_map is done by the tc mqprio cmd so maybe do it at start
+
+	/* Each TC is associated with one netdev queue */
+	// TODO use offset and count from tc mqprio command?
+	for (i = 0; i < num_tc; i++)
+		netdev_set_tc_queue(netdev, i, 1, i);
+
+	return 0;
+}
+
+static u16 edgx_select_ep_queue(struct net_device *netdev, struct sk_buff *skb,
+			      struct net_device *sb_dev)
+{
+	struct edgx_pt *pt;
+	int txq;
+
+	edgx_dbg("edgx_select_ep_q\n");
+
+	if (sb_dev) {
+		u8 tc = netdev_get_prio_tc_map(netdev, skb->priority);
+		struct net_device *vdev = sb_dev;
+
+		txq = vdev->tc_to_txq[tc].offset;
+		txq += reciprocal_scale(skb_get_hash(skb),
+					vdev->tc_to_txq[tc].count);
+
+		return txq;
+	} else
+		return netdev_pick_tx(netdev, skb, NULL) % netdev->real_num_tx_queues;
+}
+
+static u16 edgx_select_brport_queue(struct net_device *netdev, struct sk_buff *skb,
+			      struct net_device *sb_dev)
+{
+	struct edgx_pt *pt = net2pt(netdev);
+
+	edgx_dbg("edgx_select_brport_q port:%s\n", edgx_pt_get_name(pt));
+
+	return edgx_get_tc_mgmtraffic(pt->parent);
+}
+
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 static int edgx_pt_get_pt_parent_id(struct net_device *dev,
 				    struct netdev_phys_item_id *ppid)
 {
@@ -1258,7 +1502,7 @@ static int edgx_pt_get_pt_parent_id(struct net_device *dev,
 }
 #endif
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
 static const struct switchdev_ops edgx_brpt_switchdev_ops = {
 	.switchdev_port_attr_get = edgx_pt_attr_get,
 	.switchdev_port_attr_set = edgx_pt_attr_set,
@@ -1279,9 +1523,10 @@ static const struct net_device_ops edgx_brpt_netdev_ops = {
 	.ndo_fdb_add            = edgx_pt_fdb_add,
 	.ndo_fdb_del            = edgx_pt_fdb_del,
 	.ndo_fdb_dump           = edgx_pt_fdb_dump,
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 	.ndo_get_port_parent_id	= edgx_pt_get_pt_parent_id,
 #endif
+	.ndo_select_queue       = edgx_select_brport_queue,
 };
 
 static const struct net_device_ops edgx_eppt_netdev_ops = {
@@ -1292,6 +1537,8 @@ static const struct net_device_ops edgx_eppt_netdev_ops = {
 	.ndo_do_ioctl           = edgx_pt_do_ioctl,
 	.ndo_get_stats64        = edgx_eppt_get_stats64,
 	.ndo_tx_timeout         = edgx_pt_tx_timeout,
+	.ndo_setup_tc           = edgx_tc_setup,
+	.ndo_select_queue       = edgx_select_ep_queue,
 };
 
 static const struct ethtool_ops edgx_eppt_ethtool_ops = {
@@ -1368,7 +1615,7 @@ static void edgx_switchdev_event_work_fn(struct work_struct *work)
 	switch (wk->event) {
 	case SWITCHDEV_FDB_ADD_TO_DEVICE:
 		fdb_info = &wk->fdb_info;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 		if (!fdb_info->added_by_user)
 			break;
 #endif
@@ -1386,7 +1633,7 @@ static void edgx_switchdev_event_work_fn(struct work_struct *work)
 		break;
 	case SWITCHDEV_FDB_DEL_TO_DEVICE:
 		fdb_info = &wk->fdb_info;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 		if (!fdb_info->added_by_user)
 			break;
 #endif
@@ -1407,7 +1654,7 @@ static void edgx_switchdev_event_work_fn(struct work_struct *work)
 	dev_put(pt->netdev);
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 static int
 edgx_switchdev_pt_attr_set_event(struct net_device *netdev,
 		struct switchdev_notifier_port_attr_info *port_attr_info)
@@ -1473,7 +1720,7 @@ static int edgx_switchdev_event(struct notifier_block *unused,
 	if (netdev->netdev_ops != &edgx_brpt_netdev_ops)
 		return NOTIFY_DONE; /* not one of ours */
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 	if (event == SWITCHDEV_PORT_ATTR_SET)
 		return edgx_switchdev_pt_attr_set_event(netdev, ptr);
 #endif
@@ -1516,7 +1763,7 @@ static struct notifier_block edgx_switchdev_nb __read_mostly = {
 	.notifier_call = edgx_switchdev_event,
 };
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 static struct notifier_block edgx_switchdev_blocking_nb = {
 	.notifier_call = edgx_switchdev_blocking_event,
 };
@@ -1798,16 +2045,75 @@ static inline void _edgx_pt_deactivate(struct edgx_pt *pt)
 	unregister_netdev(pt->netdev);
 }
 
+static void edgx_netdev_ep_setup(struct net_device *netdev)
+{
+	//ether_setup(netdev);
+	// TODO: extra mq setups?
+	netdev->netdev_ops  = &edgx_eppt_netdev_ops;
+	netdev->ethtool_ops = &edgx_eppt_ethtool_ops;
+	netdev->priv_flags |= IFF_DONT_BRIDGE;
+}
+
 int edgx_init_epport(struct edgx_br *br, struct edgx_pt **ppt)
 {
-	struct edgx_pt *pt = _edgx_pt_init(br, ppt, PT_EP_ID);
+	struct edgx_pt *pt = NULL;
+	struct edgx_com *com = edgx_br_get_com(br);
+	u8	num_rx_queues, num_tx_queues;
+	struct net_device *netdev = NULL;
 
-	if (!pt)
-		goto err_port;
+	if (edgx_multiqueue_support_get(com, &num_tx_queues, &num_rx_queues)) {
+		u8 mac[ETH_ALEN];
+		char port_name[IFNAMSIZ];
 
-	pt->netdev->netdev_ops  = &edgx_eppt_netdev_ops;
-	pt->netdev->ethtool_ops = &edgx_eppt_ethtool_ops;
-	pt->netdev->priv_flags |= IFF_DONT_BRIDGE;
+		snprintf(port_name, IFNAMSIZ, "sw%uep",
+			 edgx_br_get_id(br));
+		netdev = alloc_netdev_mqs(sizeof(struct edgx_pt), port_name,
+				 NET_NAME_UNKNOWN, edgx_netdev_ep_setup,
+				 num_tx_queues, num_rx_queues);
+
+		if (!netdev)
+			goto err_port;
+
+		pt = netdev_priv(netdev);
+		*ppt = netdev_priv(netdev);
+		memset(pt, 0, sizeof(*pt));
+
+
+		/* can do multicast */
+		netdev->flags    |= IFF_MULTICAST;
+		/* prevent dead-loop bug? */
+		netdev->features |= NETIF_F_LLTX;
+		/* don't change network namespace? */
+		netdev->features |= NETIF_F_NETNS_LOCAL;
+
+		pt->ptid    = PT_EP_ID;
+		pt->parent = br;
+		pt->netdev = netdev;
+
+		ether_addr_copy(mac, edgx_br_get_mac(br));
+		mac[ETH_ALEN - 1] = (u8)pt->ptid;
+		ether_addr_copy(netdev->dev_addr, mac);
+
+		pt->hcom = edgx_com_reg_pt(edgx_br_get_com(br), pt);
+		if (!pt->hcom) {
+			free_netdev(netdev);
+			return NULL;
+		}
+		// TODO: netdev_set_prio_tc_map to default ones??
+		netif_set_real_num_tx_queues(netdev, num_tx_queues);
+		netif_set_real_num_rx_queues(netdev, num_rx_queues);
+		// TODO set q len properly with define EDGX_DMA_DESC_CNT
+		netdev->tx_queue_len = (256 - 1) * 8; // Max queues x Desc number
+	} else {
+		pt = _edgx_pt_init(br, ppt, PT_EP_ID);
+
+		if (!pt)
+			goto err_port;
+
+		pt->netdev->netdev_ops  = &edgx_eppt_netdev_ops;
+		pt->netdev->ethtool_ops = &edgx_eppt_ethtool_ops;
+		pt->netdev->priv_flags |= IFF_DONT_BRIDGE;
+	}
 
 	edgx_pt_info(pt, "Setup Endpoint Port ...\n");
 	if (_edgx_pt_activate(pt))
@@ -1826,13 +2132,16 @@ int edgx_probe_brports(struct edgx_br *br, struct edgx_pt **ppt)
 	struct edgx_ifdesc        pifd;
 	ptid_t                    ptid;
 	ptid_t                    mgmt_ptid;
-	const struct edgx_ifreq   ifreq = { .id = AC_PORT_ID, .v_maj = 1 };
+	const struct edgx_ifreq   ifreq = { .id = AC_PORT_ID, .v_maj = 2 };
 
 	if (!br || !ppt)
 		return -EINVAL;
 	ifd = edgx_ac_get_if(&ifreq);
 	if (!ifd)
 		return -ENODEV;
+
+	edgx_br_info(br, "Traffic class for management traffic: %u\n",
+			edgx_get_tc_mgmtraffic(br));
 
 	mgmt_ptid = edgx_com_get_mgmt_ptid(edgx_br_get_com(br));
 
@@ -1847,7 +2156,7 @@ int edgx_probe_brports(struct edgx_br *br, struct edgx_pt **ppt)
 		pt->iobase = pifd.iobase;
 		pt->netdev->netdev_ops     = &edgx_brpt_netdev_ops;
 		pt->netdev->ethtool_ops    = &edgx_brpt_ethtool_ops;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
 		pt->netdev->switchdev_ops  = &edgx_brpt_switchdev_ops;
 #endif
 		pt->netdev->watchdog_timeo = msecs_to_jiffies(EDGX_PT_WDT_MS);
@@ -1906,7 +2215,7 @@ next_port:
 	// TODO: Check return values
 	register_netdevice_notifier(&edgx_netdev_nb);
 	register_switchdev_notifier(&edgx_switchdev_nb);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 	register_switchdev_blocking_notifier(&edgx_switchdev_blocking_nb);
 #endif
 	return 0;
@@ -1920,7 +2229,7 @@ void edgx_shutdown_brports(struct edgx_pt **ppt)
 		return;
 
 	// TODO: Check return values
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 	unregister_switchdev_blocking_notifier(&edgx_switchdev_blocking_nb);
 #endif
 	unregister_switchdev_notifier(&edgx_switchdev_nb);
@@ -2060,7 +2369,7 @@ void edgx_pt_stats(struct net_device *netdev,
 	 * when this is reset to zero, read fill level data
 	 */
 	dma_ports = edgx_br_get_generic(pt->parent, BR_GX_DMA_PORTS);
-	if (test_bit(pt->ptid, (const unsigned long int *)&dma_ports)) {
+	if (test_bit(pt->ptid, (const unsigned long *)&dma_ports)) {
 		for (i = _STAT_MAX; i < _QUEUE_FILL_MAX; i++)
 			stat_values[i] = 0;
 	} else {

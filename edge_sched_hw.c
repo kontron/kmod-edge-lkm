@@ -61,7 +61,9 @@ int edgx_sched_hw_init(edgx_io_t *base_pt, u16 ns_per_clk, u8 gate_states)
 	edgx_wr16(base_pt, EDGX_SCHED_EME_DIS_STAT3, 0);
 	edgx_wr16(base_pt, EDGX_SCHED_EME_DIS_CTRL, EDGX_SCHED_EME_DIS_ON);
 
-	if (ns_per_clk == 8U)
+	if (ns_per_clk == 5U)
+		dc_speed = EDGX_SCHED_HW_DC_SPD_200MHZ;
+	else if (ns_per_clk == 8U)
 		dc_speed = EDGX_SCHED_HW_DC_SPD_125MHZ;
 	else if (ns_per_clk == 10U)
 		dc_speed = EDGX_SCHED_HW_DC_SPD_100MHZ;

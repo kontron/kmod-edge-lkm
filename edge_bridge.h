@@ -29,15 +29,35 @@ struct edgx_br;
 
 #include <linux/kernel.h>
 #include "edge_defines.h"
-#include "edge_bridge.h"
 #include "tsnic_vpd.h"
 
 #define EDGX_BR_GEN_REG		(0x10)
-#define EDGX_BR_INT_MASK	(0x02C)
-#define EDGX_BR_INT_STAT	(0x02E)
 #define EDGX_BR_INT_MASK_CLR	(0x030)
 #define EDGX_BR_INT_MASK_SET	(0x034)
-#define EDGX_BR_INT_STAT_2	(0x038)
+#define EDGX_BR_INT_STAT	(0x038)
+
+enum edgx_br_irq_nr {
+	EDGX_IRQ_NR_TS_TX = 0,
+	EDGX_IRQ_NR_DMA_TX = 4,
+	EDGX_IRQ_NR_DMA_RX = 5,
+	EDGX_IRQ_NR_DMA_ERR = 6,
+	EDGX_IRQ_NR_FPTS = 10,
+	EDGX_IRQ_NR_SCHED_TAB = 11,
+	EDGX_IRQ_NR_ACM_SCHED = 12,
+	EDGX_IRQ_NR_ACM_MSG_BUF = 13,
+	EDGX_IRQ_CNT = 16
+};
+
+enum edgx_br_irq_trig_type {
+	EDGX_IRQ_EDGE_TRIG,
+	EDGX_IRQ_LEVEL_TRIG
+};
+
+struct edgx_br_irq {
+	int				irq_vec[EDGX_IRQ_CNT];
+	enum edgx_br_irq_trig_type	trig;
+	bool 				shared;
+};
 
 extern unsigned int mgmttc;
 extern int csrating;
@@ -45,7 +65,8 @@ extern char *syncmode;
 extern struct attribute *ieee8021_brpt_common[];
 
 int edgx_br_probe_one(unsigned int br_id, struct device *dev,
-		      void *base, int irq, struct edgx_br **br_ret, struct vpd *vpd);
+		      void *base, struct edgx_br_irq *irq,
+		      struct edgx_br **br_ret, struct vpd *vpd);
 void edgx_br_shutdown(struct edgx_br *br);
 void *edgx_br_get_base(struct edgx_br *br);
 
@@ -77,6 +98,8 @@ void edgx_br_clr_int_mask(struct edgx_br *br, u16 mask);
 void edgx_br_clr_int_stat(struct edgx_br *br, u16 stat);
 u16 edgx_br_get_int_mask(struct edgx_br *br);
 u16 edgx_br_get_int_stat(struct edgx_br *br);
+void edgx_br_irq_enable(struct edgx_br *br, enum edgx_br_irq_nr irq);
+void edgx_br_irq_disable(struct edgx_br *br, enum edgx_br_irq_nr irq);
 
 int     edgx_br_ageing_set(struct edgx_br *br, clock_t ageing_time);
 clock_t edgx_br_ageing_get(const struct edgx_br *br);

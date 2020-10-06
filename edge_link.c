@@ -169,7 +169,7 @@ int _edgx_link_adjust_adapter(struct edgx_link *lnk)
 
 	/* Link status (affects LEDs) HW controlled */
 	edgx_set16(lnk->adpt.iobase, _ADPT_LINK_STS, 2, 1, _LINK_STATUS_HW_CTL);
-	/* Adapter to auto negotiation; enabled bit bit 0,4,8 = 1 */
+	/* Adapter to auto negotiation; enabled bit 0,4,8 = 1 */
 	edgx_wr16(lnk->adpt.iobase, _ADPT_PCS_CTL, _PCS_CTL_ANEG);
 
 	return _SUPPORTED_DUAL_ADAPTER;
@@ -216,7 +216,7 @@ int edgx_link_set_ksettings(struct net_device *netdev,
 	struct edgx_link *lnk = edgx_net2link(netdev);
 
 		if (lnk->phydev)
-		return phy_ethtool_set_link_ksettings(netdev, cmd);
+			return phy_ethtool_set_link_ksettings(netdev, cmd);
 
 	/* No support if running on internal port (everything fixed) */
 	return -ENOTSUPP;
@@ -231,7 +231,7 @@ int edgx_link_nway_reset(struct net_device *netdev)
 	return -ENODEV;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
 int edgx_link_get_speed(struct edgx_link *lnk)
 {
 	if (!lnk) /* shouldn't happen */
@@ -290,9 +290,8 @@ int edgx_link_get_speed(struct edgx_link *lnk)
 
 		for (i = 0, cnt = 0, speed = SPEED_UNKNOWN;
 		     lnk_modes[i] != __ETHTOOL_LINK_MODE_MASK_NBITS; i++)
-			if(linkmode_test_bit(lnk_modes[i],
-					     lnk->phydev->advertising))
-			{
+			if (linkmode_test_bit(lnk_modes[i],
+					     lnk->phydev->advertising)) {
 				speed = spds[i];
 				cnt++;
 			}
@@ -437,7 +436,7 @@ static void _edgx_link_disconnect(struct edgx_link *lnk)
 	}
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,3,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
 static void _edgx_link_phy_support(struct edgx_link *lnk)
 {
 	int spdcaps;
@@ -681,6 +680,9 @@ int edgx_link_set_mdiobus(struct edgx_link *lnk, const char *mdiobus_id)
 		     lnk->phydev->drv->name, mdiobus_id);
 
 	netdev->phydev = lnk->phydev;
+
+	if (netif_running(netdev))
+		edgx_link_start(lnk);
 
 	return 0;
 }

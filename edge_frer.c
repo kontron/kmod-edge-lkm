@@ -212,7 +212,7 @@ static u8 first_bigger(struct edgx_frer *f, u16 val)
 	while (f->seqrec_rst[(u8)i] < val && i >= 0)
 		i--;
 	if (i < 0)
-		i=0;
+		i = 0;
 	return (u8)i;
 }
 

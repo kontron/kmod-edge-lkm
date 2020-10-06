@@ -46,8 +46,8 @@ struct edgx_com_hdl;
 				COM_FLAG_PREEMPT_MASK |   \
 				COM_FLAG_IPOMARK)
 
-int edgx_com_probe(struct edgx_br *br, const char *ifname, const char *drv_name,
-		   int irq, struct edgx_com **com);
+int edgx_com_probe(struct edgx_br *br, const char *ifname,
+		   struct edgx_com **com, edgx_io_t *mngmt_base);
 void edgx_com_shutdown(struct edgx_com *com);
 
 struct edgx_com_hdl *edgx_com_reg_pt(struct edgx_com *com, struct edgx_pt *pt);
@@ -65,5 +65,11 @@ int edgx_com_hwts_get(struct edgx_com_hdl *hcom, struct ifreq *ifr);
 void edgx_com_txts_dispatch(struct sk_buff *skb,
 			    struct skb_shared_hwtstamps *hwts);
 void edgx_com_tx_timeout(struct edgx_com_hdl *hcom, struct net_device *netdev);
+bool edgx_multiqueue_support_get(struct edgx_com *com,
+				 u8 *num_tx_queues, u8 *num_rx_queues);
+irqreturn_t edgx_com_ts_tx_isr(int irq, void *device);
+irqreturn_t edgx_com_dma_tx_isr(int irq, void *device);
+irqreturn_t edgx_com_dma_rx_isr(int irq, void *device);
+irqreturn_t edgx_com_dma_err_isr(int irq, void *device);
 
 #endif /* _EDGE_COM_H */

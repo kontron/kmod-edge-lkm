@@ -1,4 +1,4 @@
-/// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0
 /* TTTech EDGE/DE-IP Linux driver
  * Copyright(c) 2018 TTTech Computertechnik AG.
  *
@@ -30,8 +30,6 @@
 #include "edge_util.h"
 #include "edge_bridge.h"
 
-/*Maximum number of queues*/
-#define MAX_NR_QUEUES	8U
 /*Offset calculated for shapers register address*/
 #define OFFS(IDX)	(0x30 + (IDX) * 2)
 /*1000 mbps*/
@@ -50,10 +48,14 @@
 struct edgx_fqtss {
 	struct edgx_pt		*parent;
 	edgx_io_t		*iobase;
-			/*Transmission selection algorithm table*/
-	u8			tsa_tbl[MAX_NR_QUEUES];
-			/*Admin addend table,used for admin slope val*/
-	u16			addend[MAX_NR_QUEUES];
+			/* Transmission selection algorithm table*/
+	u8			tsa_tbl[EDGX_BR_MAX_TC];
+			/* table,used for admin slope val*/
+	u32			adminidleslope[EDGX_BR_MAX_TC];
+			/* table used for internal values of idleslopes*/
+	u32			idleslope[EDGX_BR_MAX_TC];
+			/* addend is the rate at which credit increases*/
+	u16			addend[EDGX_BR_MAX_TC];
 			/*Protect writing to shapers register*/
 	struct mutex		lock;
 };
@@ -61,13 +63,6 @@ struct edgx_fqtss {
 static inline struct edgx_fqtss *edgx_dev2fqtss(struct device *dev)
 {
 	return edgx_pt_get_fqtss(edgx_dev2pt(dev));
-}
-
-/*Bitrate calculation based on addend value*/
-static u32 edgx_fqtss_calc_bitrate(u16 addend, u32 clk)
-{
-	/* addend x clk x 8 / (8 x 4096) = addend x clk x 2^-12 */
-	return (u32)(((u64)addend * (u64)clk) >> 12);
 }
 
 /**
@@ -112,10 +107,12 @@ static void edgx_fqtss_write_addend(struct edgx_fqtss *fqtss
  * for the remaining to 25% of the maximum line speed. This was derived
  *  from IEEE 802.1Q [IEEE18] chapter 34.3, 34.3.1
  */
-static u16 edgx_fqtss_default_cbs_addend(struct edgx_pt *pt,
+static void edgx_fqtss_default_cbs_addend(struct edgx_fqtss *fqtss,
 					 unsigned int clk, u16 idx)
 {
 	u16	addend;
+	u32	adminidleslope;
+	struct edgx_pt *pt = fqtss->parent;
 	int	link_speed = edgx_pt_get_speed(pt);
 	u8	nr_queues = edgx_br_get_generic(edgx_pt_get_br(pt)
 						, BR_GX_QUEUES);
@@ -124,18 +121,27 @@ static u16 edgx_fqtss_default_cbs_addend(struct edgx_pt *pt,
 		edgx_pt_warn(pt, "Unknown port speed\n");
 		addend = edgx_fqtss_calc_addend(MAX_LINE_SPEED
 					       , clk);
+		adminidleslope = MAX_LINE_SPEED;
 	} else {
 		/*Convert speed to bps, since it is retrieved im Mbps*/
 		link_speed *= MEGA_VAL;
 		addend = edgx_fqtss_calc_addend(link_speed, clk);
+		adminidleslope = link_speed;
 	}
 
-	if (idx >= (nr_queues - 2))
+	if (idx >= (nr_queues - 2)) {
 		addend = PERCENTAGE(addend, 75);
-	else
+		adminidleslope = PERCENTAGE(adminidleslope, 75);
+	} else {
 		addend = PERCENTAGE(addend, 25);
+		adminidleslope = PERCENTAGE(adminidleslope, 25);
+	}
 
-	return addend;
+	mutex_lock(&fqtss->lock);
+	fqtss->addend[idx] = addend;
+	fqtss->adminidleslope[idx] = adminidleslope;
+	fqtss->idleslope[idx] = adminidleslope;
+	mutex_unlock(&fqtss->lock);
 }
 
 /*period in ns, we need frequency in Hz -> 1/(cycle*10^-9) = 10^9/cycle */
@@ -167,7 +173,7 @@ static u16 edgx_fqtss_calc_idle_slope(struct edgx_fqtss *fqtss, u8 idx,
 		return fqtss->addend[idx];
 
 	link_speed = edgx_pt_get_speed(fqtss->parent);
-	bitrate = edgx_fqtss_calc_bitrate(fqtss->addend[idx], clk);
+	bitrate = fqtss->adminidleslope[idx];
 	/* Overflow check: a*b > c if and only if a > c/b */
 	if (bitrate > (div64_u64(U64_MAX, num))) {
 		/* try to first divide and then multiply */
@@ -196,6 +202,9 @@ static u16 edgx_fqtss_calc_idle_slope(struct edgx_fqtss *fqtss, u8 idx,
 		edgx_pt_warn(fqtss->parent, "TSA:set max line speed\n");
 	}
 
+	mutex_lock(&fqtss->lock);
+	fqtss->idleslope[idx] = bitrate;
+	mutex_unlock(&fqtss->lock);
 	addend = edgx_fqtss_calc_addend(bitrate, clk);
 
 	return addend;
@@ -232,13 +241,12 @@ void edgx_fqtss_sched_change(struct edgx_fqtss *fqt
 	}
 }
 
-static ssize_t oper_slope_tbl_read(struct file *filp, struct kobject *kobj,
+static ssize_t admin_slope_tbl_read(struct file *filp, struct kobject *kobj,
 				   struct bin_attribute *bin_attr,
 				   char *buf, loff_t ofs, size_t count)
 {
 	loff_t	idx = 0;
 	struct	edgx_fqtss *fqt = edgx_dev2fqtss(kobj_to_dev(kobj));
-	int	clk = edgx_fqtss_get_clk(fqt);
 	u8	nr_queues = edgx_br_get_generic(edgx_pt_get_br(fqt->parent)
 						, BR_GX_QUEUES);
 
@@ -246,15 +254,16 @@ static ssize_t oper_slope_tbl_read(struct file *filp, struct kobject *kobj,
 	    idx > (nr_queues - 1))
 		return -EINVAL;
 
-	((u64 *)buf)[0] = edgx_fqtss_calc_bitrate(fqt->addend[idx], clk);
+	((u64 *)buf)[0] = fqt->adminidleslope[idx];
 	return count;
 }
 
-static ssize_t admin_slope_tbl_read(struct file *filp, struct kobject *kobj,
+static ssize_t oper_slope_tbl_read(struct file *filp, struct kobject *kobj,
 				    struct bin_attribute *bin_attr,
 				    char *buf, loff_t ofs, size_t count)
 {
-	return oper_slope_tbl_read(filp, kobj, bin_attr, buf, ofs, count);
+/* operIdleSlope and adminIdleSlope are equal as SRP is not in operation.*/
+	return admin_slope_tbl_read(filp, kobj, bin_attr, buf, ofs, count);
 }
 
 static ssize_t admin_slope_tbl_write(struct file *filp, struct kobject *kobj,
@@ -288,6 +297,8 @@ static ssize_t admin_slope_tbl_write(struct file *filp, struct kobject *kobj,
 	addend = edgx_fqtss_calc_addend(*((u32 *)buf), clk);
 
 	mutex_lock(&fqtss->lock);
+	fqtss->adminidleslope[idx] = *((u32 *)buf);
+	fqtss->idleslope[idx] = *((u32 *)buf);
 	fqtss->addend[idx] = addend;
 	mutex_unlock(&fqtss->lock);
 
@@ -333,23 +344,19 @@ static ssize_t tsa_tbl_write(struct file *filp, struct kobject *kobj,
 		return -EINVAL;
 
 	fqt->tsa_tbl[i] = *((u8 *)buf);
-	if ((fqt->addend[i] == MAX_ADDEND) && (*((u8 *)buf) == CBS)) {
-		mutex_lock(&fqt->lock);
-		fqt->addend[i] = edgx_fqtss_default_cbs_addend
-				(fqt->parent, clk, i);
-		mutex_unlock(&fqt->lock);
-	}
+	if ((fqt->addend[i] == MAX_ADDEND) && (*((u8 *)buf) == CBS))
+		edgx_fqtss_default_cbs_addend(fqt, clk, i);
 	edgx_fqtss_write_addend(fqt, fqt->addend[i], i, clk);
 
 	return count;
 }
 
 EDGX_BIN_ATTR_RO(oper_slope_tbl,  "operIdleSlopeTable",
-		 MAX_NR_QUEUES * sizeof(u64));
+		EDGX_BR_MAX_TC * sizeof(u64));
 EDGX_BIN_ATTR_RW(admin_slope_tbl, "adminIdleSlopeTable",
-		 MAX_NR_QUEUES * sizeof(u64));
+		EDGX_BR_MAX_TC * sizeof(u64));
 EDGX_BIN_ATTR_RW(tsa_tbl, "TxSelectionAlgorithmTable",
-		 MAX_NR_QUEUES * sizeof(u8));
+		EDGX_BR_MAX_TC * sizeof(u8));
 
 static struct bin_attribute *ieee8021fqtss_binattrs[] = {
 	&bin_attr_oper_slope_tbl,
@@ -386,8 +393,6 @@ int edgx_probe_fqtss(struct edgx_pt *pt,
 		return -ENOMEM;
 	}
 
-	memset(&fqtss->addend[i], 0, MAX_NR_QUEUES);
-	memset(&fqtss->tsa_tbl[i], 0, MAX_NR_QUEUES);
 	(fqtss)->iobase = iobase;
 	(fqtss)->parent = pt;
 	mutex_init(&fqtss->lock);

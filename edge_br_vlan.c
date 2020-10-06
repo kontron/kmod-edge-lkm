@@ -99,9 +99,23 @@ struct edgx_br_vlan {
  * -) 'VLAN' for VLAN manipulation registers.
  */
 
-#define _VLANPT_REG(vid)  (0x8000 + (vid) * 2)
-#define _VLANTAG_REG(vid) (0x8000 + 0x2000 + ((vid) * 2))
-#define _VLANFID_REG(vid) (0x8000 + 0x4000 + ((vid) * 2))
+#define EDGX_BR_VLAN_BASE		(0x8000)
+#define EDGX_BR_VLAN_CMD_BASE	(EDGX_BR_VLAN_BASE + 0x0)
+
+#define EDGX_BR_VLAN_CMD_READ	(0<<12)
+#define EDGX_BR_VLAN_CMD_WRITE	(1<<12)
+
+#define EDGX_BR_VLAN_CMD_PORTS	(1<<13)
+#define EDGX_BR_VLAN_CMD_TAG	(1<<14)
+#define EDGX_BR_VLAN_CMD_FID	(1<<15)
+
+#define EDGX_BR_VLAN_PORTS_BASE	(EDGX_BR_VLAN_CMD_BASE + 0x8)
+
+#define EDGX_BR_VLAN_TAG_BASE	(EDGX_BR_VLAN_CMD_BASE + 0xA)
+
+#define EDGX_BR_VLAN_FID_BASE	(EDGX_BR_VLAN_CMD_BASE + 0xC)
+
+#define _ENGINEERED_TRAFFIC(boolean)	(((boolean) ? (0x1) : (0x0)) << 15)
 
 #define _MTPORTS_REG      0x12
 #define _MTPORTS_ALL      0xFFFF
@@ -188,6 +202,7 @@ static void _edgx_br_vlan_flush_fid(struct edgx_br_vlan *brvlan, fid_t fid,
 	edgx_set16(brvlan->iobase, EDGX_BR_GEN_REG, 14, 14, 1);
 
 	/* Sleep and then wait until flag is cleared again by chip. */
+	/* Should be aligned with HW */
 	usleep_range(300, 400);
 	do {
 		reg = edgx_get16(brvlan->iobase, EDGX_BR_GEN_REG, 14, 14);
@@ -202,15 +217,31 @@ static void _edgx_br_vlan_set_te_fid(struct edgx_br_vlan *brvlan,
 	struct _vlan *vlan;
 	struct edgx_pt *pt = NULL;
 	int i;
+	u16 reg;
 
 	mutex_lock(&brvlan->reg_lock);
-	list_for_each_entry(vlan, &fid->vlanlist, entry)
-		edgx_set16(brvlan->iobase, _VLANFID_REG(vlan->vid), 15, 15, te);
-	if (te)
-		for (i = 0; i < EDGX_BR_MAX_PORTS; i++)
-			if ((pt = edgx_br_get_brpt(brvlan->parent, i)) != NULL)
-				edgx_pt_set_fid_fwd_state(pt, fid->fid, BR_STATE_FORWARDING);
+	list_for_each_entry(vlan, &fid->vlanlist, entry) {
+		edgx_wr16(brvlan->iobase, EDGX_BR_VLAN_FID_BASE,
+				(fid->fid | _ENGINEERED_TRAFFIC(te)));
+		edgx_wr16(brvlan->iobase, EDGX_BR_VLAN_CMD_BASE,
+				(vlan->vid | EDGX_BR_VLAN_CMD_WRITE
+					   | EDGX_BR_VLAN_CMD_FID));
+		/* Sleep and then wait until flags are cleared again by chip */
+		/* Should be aligned with HW */
+		usleep_range(300, 400);
+		do {
+			reg = edgx_get16(brvlan->iobase,
+					 EDGX_BR_VLAN_CMD_BASE, 13, 15);
+		} while (reg);
+	}
 	mutex_unlock(&brvlan->reg_lock);
+	if (te)
+		for (i = 0; i < EDGX_BR_MAX_PORTS; i++) {
+			pt = edgx_br_get_brpt(brvlan->parent, i);
+			if (pt != NULL)
+				edgx_pt_set_fid_fwd_state(pt, fid->fid,
+							  BR_STATE_FORWARDING);
+		}
 }
 
 static inline void _edgx_br_move_fid2msti(struct edgx_br_vlan *brvlan,
@@ -260,6 +291,8 @@ static inline void _edgx_br_move_vid2fid(struct edgx_br_vlan *brvlan,
 					 struct _vlan *vlan, struct _fid *fid,
 					 bool flush_fid)
 {
+	u16 reg;
+
 	/* Call this function only when holding v2f lock! */
 	if (vlan->fid == fid)
 		return;
@@ -274,7 +307,30 @@ static inline void _edgx_br_move_vid2fid(struct edgx_br_vlan *brvlan,
 	/* FIDs are counted from 1, but chip counts from 0, so we need to
 	 * decrement the given FID by one.
 	 */
-	edgx_set16(brvlan->iobase, _VLANFID_REG(vlan->vid), 5, 0, fid->fid);
+	mutex_lock(&brvlan->reg_lock);
+	/* Read VLAN_FID first */
+	edgx_wr16(brvlan->iobase, EDGX_BR_VLAN_CMD_BASE,
+		  (vlan->vid | EDGX_BR_VLAN_CMD_READ | EDGX_BR_VLAN_CMD_FID));
+	/* Sleep and then wait until flags are cleared again by chip. */
+	/* Should be aligned with HW */
+	usleep_range(300, 400);
+	do {
+		reg = edgx_get16(brvlan->iobase,
+				 EDGX_BR_VLAN_CMD_BASE, 13, 15);
+	} while (reg);
+	mutex_unlock(&brvlan->reg_lock);
+	/* Set the new fid to previously adquired VLAN_FID register */
+	edgx_set16(brvlan->iobase, EDGX_BR_VLAN_FID_BASE, 5, 0, fid->fid);
+	edgx_wr16(brvlan->iobase, EDGX_BR_VLAN_CMD_BASE,
+		  (vlan->vid | EDGX_BR_VLAN_CMD_WRITE | EDGX_BR_VLAN_CMD_FID));
+	/* Sleep and then wait until flags are cleared again by chip. */
+	/* Should be aligned with HW */
+	usleep_range(300, 400);
+	do {
+		reg = edgx_get16(brvlan->iobase,
+				 EDGX_BR_VLAN_CMD_BASE, 13, 15);
+	} while (reg);
+	mutex_unlock(&brvlan->reg_lock);
 	if (flush_fid && vlan->fid)
 		_edgx_br_vlan_flush_fid(brvlan, vlan->fid->fid, PT_VEC_ALL);
 	vlan->fid = fid;
@@ -454,6 +510,7 @@ int edgx_br_vlan_add_pt(struct edgx_br_vlan *brvlan,
 	bool          pvid     = v->flags & BRIDGE_VLAN_INFO_PVID;
 	ptid_t        ptid     = edgx_pt_get_id(pt);
 	u8            fidfwd;
+	u16	      reg;
 
 	if (!brvlan)
 		return -EINVAL;
@@ -499,15 +556,40 @@ int edgx_br_vlan_add_pt(struct edgx_br_vlan *brvlan,
 				goto out_no_vid;
 			}
 		}
-
-		edgx_wr16(brvlan->iobase, _VLANPT_REG(vlan->vid), vlan->ptvec);
-		edgx_set16(brvlan->iobase, _VLANTAG_REG(vlan->vid),
+		mutex_lock(&brvlan->reg_lock);
+		/* Read the values from VLAN_TAG for current vid */
+		edgx_wr16(brvlan->iobase, EDGX_BR_VLAN_CMD_BASE, (vlan->vid
+			  | EDGX_BR_VLAN_CMD_READ | EDGX_BR_VLAN_CMD_TAG));
+		/* Sleep and then wait until flags are cleared again by chip */
+		/* Should be aligned with HW */
+		usleep_range(300, 400);
+		do {
+			reg = edgx_get16(brvlan->iobase,
+					 EDGX_BR_VLAN_CMD_BASE, 13, 15);
+		} while (reg);
+		edgx_wr16(brvlan->iobase,
+			  EDGX_BR_VLAN_PORTS_BASE, vlan->ptvec);
+		/* Set the bits on the previously adquired VLAN_TAG register */
+		edgx_set16(brvlan->iobase, EDGX_BR_VLAN_TAG_BASE,
 			   ptid, ptid, untagged);
+		edgx_wr16(brvlan->iobase, EDGX_BR_VLAN_CMD_BASE,
+			  (vlan->vid | EDGX_BR_VLAN_CMD_WRITE
+				     | EDGX_BR_VLAN_CMD_PORTS
+				     | EDGX_BR_VLAN_CMD_TAG));
+		/* Sleep and then wait until flags are cleared again by chip */
+		/* Should be aligned with HW */
+		usleep_range(300, 400);
+		do {
+			reg = edgx_get16(brvlan->iobase,
+					 EDGX_BR_VLAN_CMD_BASE, 13, 15);
+		} while (reg);
+		mutex_unlock(&brvlan->reg_lock);
 
-		/* If this FID was already set to TE-MSTI do not change the port fw state */
-		if (fid->msti->mstid != EDGX_TE_MSTID)
-		{
-			fidfwd = brvlan->msti[_CIST_IDX].ptstate[edgx_pt_get_id(pt)];
+		/* If this FID was already set to TE-MSTI, */
+		/* do not change the port fw state */
+		if (fid->msti->mstid != EDGX_TE_MSTID) {
+			fidfwd = brvlan->msti[_CIST_IDX]
+					.ptstate[edgx_pt_get_id(pt)];
 			edgx_pt_set_fid_fwd_state(pt, fid->fid, fidfwd);
 		}
 
@@ -547,7 +629,7 @@ int edgx_br_vlan_del_pt(struct edgx_br_vlan *brvlan,
 			struct switchdev_obj_port_vlan *v, struct edgx_pt *pt)
 {
 	struct _vlan *vlan = NULL;
-	u16           vid;
+	u16           vid, reg;
 	ptid_t        ptid = edgx_pt_get_id(pt);
 
 	if (!brvlan)
@@ -559,9 +641,20 @@ int edgx_br_vlan_del_pt(struct edgx_br_vlan *brvlan,
 		vlan = _edgx_br_vlan_get_vlan(brvlan, vid);
 		if (vlan) {
 			vlan->ptvec &= (~BIT(ptid));
-			edgx_wr16(brvlan->iobase, _VLANPT_REG(vlan->vid),
+			mutex_lock(&brvlan->reg_lock);
+			edgx_wr16(brvlan->iobase, EDGX_BR_VLAN_PORTS_BASE,
 				  vlan->ptvec);
-
+			edgx_wr16(brvlan->iobase, EDGX_BR_VLAN_CMD_BASE,
+				  (vlan->vid | EDGX_BR_VLAN_CMD_WRITE
+					     | EDGX_BR_VLAN_CMD_PORTS));
+			/* Sleep and then wait until flags are cleared by HW */
+			/* Should be aligned with HW */
+			usleep_range(300, 400);
+			do {
+				reg = edgx_get16(brvlan->iobase,
+						 EDGX_BR_VLAN_CMD_BASE, 13, 15);
+			} while (reg);
+			mutex_unlock(&brvlan->reg_lock);
 			if (!vlan->ptvec) {
 				vlan->vid = _INVALID_VID;
 				vlan->fid = NULL;
@@ -601,7 +694,7 @@ int edgx_br_vlan_dump_pt(struct edgx_br_vlan *brvlan,
 	unsigned int i;
 	u16          pvid = edgx_pt_get_pvid(pt);
 	ptid_t       ptid = edgx_pt_get_id(pt);
-	u16          reg;
+	u16	     reg;
 	int          ret = 0;
 
 	/* TODO: VLANs should be delivered in ascending order, so that
@@ -618,7 +711,20 @@ int edgx_br_vlan_dump_pt(struct edgx_br_vlan *brvlan,
 			vlan->vid_end   = vid;
 			if (vid == pvid)
 				vlan->flags |= BRIDGE_VLAN_INFO_PVID;
-			reg = edgx_rd16(brvlan->iobase, _VLANTAG_REG(vid));
+			mutex_lock(&brvlan->reg_lock);
+			/* Read the VLAN_TAG register for the vid */
+			edgx_wr16(brvlan->iobase, EDGX_BR_VLAN_CMD_BASE,
+				  (vid | EDGX_BR_VLAN_CMD_READ
+				       | EDGX_BR_VLAN_CMD_TAG));
+			/* Sleep and then wait until flags are cleared by HW */
+			/* Should be aligned with HW */
+			usleep_range(300, 400);
+			do {
+				reg = edgx_get16(brvlan->iobase,
+						 EDGX_BR_VLAN_CMD_BASE, 13, 15);
+			} while (reg);
+			reg = edgx_rd16(brvlan->iobase, EDGX_BR_VLAN_TAG_BASE);
+			mutex_unlock(&brvlan->reg_lock);
 			if (reg & BIT(ptid))
 				vlan->flags |= BRIDGE_VLAN_INFO_UNTAGGED;
 			ret = cb(&vlan->obj);
@@ -896,6 +1002,7 @@ int edgx_br_init_vlan(struct edgx_br *br, edgx_io_t *iobase,
 {
 	struct edgx_br_vlan *vlan;
 	int i;
+	u16 reg;
 
 	if (!br || !brvlan)
 		return -EINVAL;
@@ -964,13 +1071,28 @@ int edgx_br_init_vlan(struct edgx_br *br, edgx_io_t *iobase,
 	for (i = 0; i < vlan->max_fids; i++) {
 		INIT_LIST_HEAD(&vlan->fid[i].vlanlist);
 		vlan->fid[i].fid = i;
+		mutex_lock(&vlan->f2m_lock);
 		_edgx_br_move_fid2msti(vlan, &vlan->fid[i],
 				       &vlan->msti[_CIST_IDX]);
+		mutex_unlock(&vlan->f2m_lock);
 	}
 
 	/* Reset all port VLAN membership memberships */
-	for (i = 0; i < VLAN_N_VID; i++)
-		edgx_wr16(vlan->iobase, _VLANPT_REG(i), 0x0);
+	for (i = 0; i < VLAN_N_VID; i++) {
+		mutex_lock(&vlan->reg_lock);
+		edgx_wr16(vlan->iobase, EDGX_BR_VLAN_PORTS_BASE, 0x0);
+		edgx_wr16(vlan->iobase, EDGX_BR_VLAN_CMD_BASE,
+			  (i | EDGX_BR_VLAN_CMD_WRITE
+			     | EDGX_BR_VLAN_CMD_PORTS));
+		/* Sleep and then wait until flags are cleared again by chip. */
+		/* Should be aligned with HW */
+		usleep_range(300, 400);
+		do {
+			reg = edgx_get16(vlan->iobase,
+					 EDGX_BR_VLAN_CMD_BASE, 13, 15);
+		} while (reg);
+		mutex_unlock(&vlan->reg_lock);
+	}
 
 	*brvlan = vlan;
 
