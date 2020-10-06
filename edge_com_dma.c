@@ -520,32 +520,33 @@ static int edgx_dma_poll(struct napi_struct *napi, int budget)
 
 	if (used < budget) {
 		napi_complete(&dma->napi);
-		edgx_br_set_int_mask_irqsave(dma->com.parent,
-					     EDGX_DMA_RX_INT_MASK |
-					     EDGX_DMA_TX_INT_MASK);
+		edgx_br_set_int_mask(dma->com.parent, EDGX_DMA_RX_INT_MASK |
+				     EDGX_DMA_TX_INT_MASK);
 		com_dma_dbg("COM DMA: Poll complete.\n");
 	}
 	return used;
 }
 
-u16 edgx_com_dma_isr(struct edgx_com *com, u16 intmask, u16 intstat)
+static irqreturn_t edgx_com_dma_isr(int irq, void *device)
 {
-	struct edgx_com_dma *dma = edgx_com_to_dma(com);
+	u16 intmask, intstat;
+	struct edgx_com_dma *dma = (struct edgx_com_dma *)device;
 
+	intmask = edgx_br_get_int_mask(dma->com.parent);
 	if (!(intmask & (EDGX_DMA_TX_INT_MASK | EDGX_DMA_RX_INT_MASK)))
-		return intmask;
+		return IRQ_NONE;
 
+	intstat = edgx_br_get_int_stat(dma->com.parent);
 	if (!(intstat & (EDGX_DMA_TX_INT_MASK | EDGX_DMA_RX_INT_MASK)))
-		return intmask;
+		return IRQ_NONE;
 
 	com_dma_dbg("COM DMA: ISR m0x%x s0x%x.\n", intmask, intstat);
 
-	intmask &= ~(EDGX_DMA_TX_INT_MASK | EDGX_DMA_RX_INT_MASK);
+	edgx_br_clr_int_mask(dma->com.parent, EDGX_DMA_RX_INT_MASK |
+			     EDGX_DMA_TX_INT_MASK);
 	napi_schedule(&dma->napi);
 
-	intmask = edgx_com_ts_isr(&dma->ts, intmask, intstat);
-
-	return intmask;
+	return IRQ_HANDLED;
 }
 
 void edgx_com_dma_tx_timeout(struct edgx_com *com, struct net_device *netdev)
@@ -580,6 +581,7 @@ static void edgx_com_dma_shutdown(struct edgx_com *com)
 	struct edgx_com_dma *dma = edgx_com_to_dma(com);
 
 	edgx_wr16(dma->dma_base, EDGX_DMA_CFG, 0);
+	free_irq(dma->irq, dma);
 	napi_disable(&dma->napi);
 	netif_napi_del(&dma->napi);
 
@@ -590,71 +592,6 @@ static void edgx_com_dma_shutdown(struct edgx_com *com)
 	edgx_com_ts_shutdown(&dma->ts);
 	kfree(dma);
 }
-
-#if defined(EDGX_COM_DMA_DUMP)
-static ssize_t dma_dump_all_show(struct device *dev,
-				 struct device_attribute *attr,
-				 char *buf)
-{
-	ssize_t ret;
-	int i;
-	u16 intmask, intstat;
-	struct edgx_br *br = edgx_dev2br(dev);
-	struct edgx_com *com = edgx_br_get_com(br);
-	struct edgx_com_dma *dma = edgx_com_to_dma(com);
-	struct edgx_dma_queue *q = &dma->tx_queue[0];
-
-	intmask = edgx_br_get_int_mask(br);
-	intstat = edgx_br_get_int_stat(br);
-
-	ret = scnprintf(buf, PAGE_SIZE, "IRQ STATUS: 0x%x\n", intstat);
-	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "IRQ MASK: 0x%x\n",
-			 intmask);
-	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "Tx cnt: %d\n",
-			dma->tx_queue[0].cnt);
-	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "Rx cnt: %d\n",
-			dma->rx_queue[0].cnt);
-
-	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "DMA TX QUEUE:\n");
-	for (i = 0; i < min(EDGX_DMA_DESC_CNT, 10); i++)
-		if (q->skb[i]) {
-			u8 *d = (u8 *)q->skb[i]->data;
-
-			ret += scnprintf(buf + ret, PAGE_SIZE - ret,
-					"Q%.2d D%.2d: cfg=0x%.4x mgt=0x%.4x dL=0x%.4x dH=0x%.4x %pM %pM %*phN %*phN\n",
-					q->idx, i, q->desc[i].cfg,
-					q->desc[i].mgmt, q->desc[i].p_data_h,
-					q->desc[i].p_data_l, &d[0], &d[6],
-					4, &d[12], 4, &d[16]);
-		}
-
-	q = &dma->rx_queue[0];
-	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "DMA RX QUEUE:\n");
-	for (i = 0; i < min(EDGX_DMA_DESC_CNT, 10); i++)
-		if (q->skb[i] && !edgx_dma_get_init(&q->desc[i])) {
-			u8 *d = (u8 *)q->skb[i]->data;
-
-			ret += scnprintf(buf + ret, PAGE_SIZE - ret,
-					"Q%.2d D%.2d: cfg=0x%.4x mgt=0x%.4x dL=0x%.4x dH=0x%.4x %pM %pM %*phN %*phN\n",
-					q->idx, i, q->desc[i].cfg,
-					q->desc[i].mgmt, q->desc[i].p_data_h,
-					q->desc[i].p_data_l, &d[0], &d[6],
-					4, &d[12], 4, &d[16]);
-		}
-
-	return ret;
-}
-
-EDGX_DEV_ATTR_RO(dma_dump_all, "dmaDumpAll");
-
-static struct attribute_group dma_group = {
-	.name = "dma",
-	.attrs = (struct attribute*[]){
-		&dev_attr_dma_dump_all.attr,
-		NULL
-	},
-};
-#endif
 
 static struct edgx_com_ops edgx_com_dma_ops = {
 	.shutdown	= edgx_com_dma_shutdown,
@@ -675,6 +612,14 @@ static int edgx_com_dma_init(struct edgx_com_dma *dma, struct edgx_br *br,
 
 	dma->dma_base = dma_base;
 	dma->irq = irq;
+
+	ret = request_irq(irq, &edgx_com_dma_isr, IRQF_SHARED,
+			  drv_name, dma);
+	if (ret) {
+		edgx_err("COM DMA: request_irq failed! ret=%d, irq=%d\n",
+			 ret, irq);
+		goto out_err_init_irq;
+	}
 
 	ret = init_dummy_netdev(&dma->napi_dev);
 	if (ret) {
@@ -712,18 +657,9 @@ static int edgx_com_dma_init(struct edgx_com_dma *dma, struct edgx_br *br,
 		goto out_err_init_queues;
 	}
 
-#if defined(EDGX_COM_DMA_DUMP)
-	ret = edgx_br_sysfs_add(br, &dma_group);
-	if (ret) {
-		edgx_err("COM DMA: Cannot add sysfs group! ret=%d\n",
-			 ret);
-		goto out_err_init_queues;
-	}
-#endif
 	napi_enable(&dma->napi);
 	edgx_br_clr_int_stat(br, EDGX_DMA_TX_INT_MASK | EDGX_DMA_RX_INT_MASK);
-	edgx_br_set_int_mask_irqsave(br, EDGX_DMA_TX_INT_MASK |
-				     EDGX_DMA_RX_INT_MASK);
+	edgx_br_set_int_mask(br, EDGX_DMA_TX_INT_MASK | EDGX_DMA_RX_INT_MASK);
 	edgx_wr16(dma->dma_base, EDGX_DMA_CFG, 0x03);
 	return 0;
 
@@ -734,6 +670,8 @@ out_err_init_queues:
 	}
 	netif_napi_del(&dma->napi);
 out_err_init_dummy:
+	free_irq(dma->irq, dma);
+out_err_init_irq:
 	return ret;
 }
 

@@ -77,8 +77,6 @@ void edgx_br_clr_int_mask(struct edgx_br *br, u16 mask);
 void edgx_br_clr_int_stat(struct edgx_br *br, u16 stat);
 u16 edgx_br_get_int_mask(struct edgx_br *br);
 u16 edgx_br_get_int_stat(struct edgx_br *br);
-void edgx_br_reset_int_mask(struct edgx_br *br, u16 br_mask, u16 sc_mask);
-void edgx_br_set_int_mask_irqsave(struct edgx_br *br, u16 mask);
 
 int     edgx_br_ageing_set(struct edgx_br *br, clock_t ageing_time);
 clock_t edgx_br_ageing_get(const struct edgx_br *br);
@@ -92,7 +90,6 @@ struct edgx_br *edgx_dev2br(struct device *dev);
 
 u16      edgx_br_rdreg(struct edgx_br *br, size_t ofs);
 void     edgx_br_wrreg(struct edgx_br *br, size_t ofs, u16 val);
-void edgx_br_set_int_mask_sched_irqsave(struct edgx_br *br, u16 mask);
 
 #define edgx_br_err(_br, _fmt, ...) pr_err("bridge-%d: " _fmt,        \
 					   edgx_br_get_id(_br), ##__VA_ARGS__)

@@ -88,7 +88,6 @@ struct edgx_br {
 
 	spinlock_t		 lock; /* Sync. access to IRQ mask */
 	struct workqueue_struct	*owq;
-	int			 irq;
 
 	void (*set_int_mask)(struct edgx_br *br, u16 mask);
 	void (*clr_int_mask)(struct edgx_br *br, u16 mask);
@@ -418,50 +417,6 @@ void edgx_br_clr_int_stat(struct edgx_br *br, u16 stat)
 u16 edgx_br_get_int_stat(struct edgx_br *br)
 {
 	return br->get_int_stat(br);
-}
-
-
-void edgx_br_set_int_mask_irqsave(struct edgx_br *br, u16 mask)
-{
-	unsigned long irq_flags;
-
-	spin_lock_irqsave(&br->lock, irq_flags);
-	br->set_int_mask(br, mask);
-	spin_unlock_irqrestore(&br->lock, irq_flags);
-}
-
-void edgx_br_set_int_mask_sched_irqsave(struct edgx_br *br, u16 mask)
-{
-	unsigned long irq_flags;
-
-	spin_lock_irqsave(&br->lock, irq_flags);
-	edgx_sched_set_int_mask(br->sched_com, mask);
-	spin_unlock_irqrestore(&br->lock, irq_flags);
-}
-
-static irqreturn_t edgx_bridge_isr(int irq, void *device)
-{
-	unsigned long irq_flags;
-	u16 intmask, intmask_fsc, intstat, intstat_fsc;
-	struct edgx_br *br = (struct edgx_br *)device;
-
-	spin_lock_irqsave(&br->lock, irq_flags);
-	intmask = edgx_br_get_int_mask(br);
-	intmask_fsc = edgx_sched_get_int_mask(br->sched_com);
-	intstat = edgx_br_get_int_stat(br);
-	intstat_fsc = edgx_sched_get_int_stat(br->sched_com);
-
-	intmask = edgx_com_dma_isr(br->com, intmask, intstat);
-	intmask_fsc = edgx_sched_isr(br->sched_com, intmask_fsc, intstat_fsc);
-
-	edgx_br_clr_int_mask(br, ~0);
-	edgx_sched_clr_int_mask(br->sched_com);
-	edgx_sched_set_int_mask(br->sched_com, intmask_fsc);
-	edgx_br_set_int_mask(br, intmask);
-
-	spin_unlock_irqrestore(&br->lock, irq_flags);
-
-	return IRQ_HANDLED;
 }
 
 static int edgx_probe_bridge(struct edgx_br *br)
@@ -815,7 +770,6 @@ int edgx_br_probe_one(unsigned int br_id, struct device *dev,
 	br->bridge.dev   = NULL;
 	br->bridge.refs  = 0;
 	br->hw.id        = br_id;
-	br->irq          = irq;
 	br->vpd          = vpd;
 
 
@@ -885,14 +839,6 @@ int edgx_br_probe_one(unsigned int br_id, struct device *dev,
 	if (ret && ret != -ENODEV)
 		goto out_frer;
 
-	ret = request_irq(irq, &edgx_bridge_isr, IRQF_SHARED,
-			dev_name(dev), br);
-	if (ret) {
-		edgx_br_err(br, "request_irq failed! ret=%d, irq=%d\n",
-			    ret, irq);
-		goto out_irq;
-	}
-
 	list_add_tail(&br->entry, &br_list);
 	*br_ret = br;
 	edgx_shutdown_ac();
@@ -900,8 +846,6 @@ int edgx_br_probe_one(unsigned int br_id, struct device *dev,
 	edgx_br_info(br, "Setup Bridge %d ... done\n", br_id);
 	return 0;
 
-out_irq:
-	edgx_shutdown_frer(br->frer);
 out_frer:
 	edgx_shutdown_sid(br->sid);
 out_sid:
@@ -936,7 +880,6 @@ void edgx_br_shutdown(struct edgx_br *br)
 	if (!br)
 		return;
 
-	free_irq(br->irq, br);
 	edgx_shutdown_frer(br->frer);
 	edgx_shutdown_sid(br->sid);
 	edgx_shutdown_psfp(br->psfp);

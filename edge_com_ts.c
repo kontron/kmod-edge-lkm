@@ -320,25 +320,28 @@ static void edgx_com_ts_work_tx(struct work_struct *work)
 			edgx_com_ts_find_tx(pts, &cur_time);
 		}
 	}
-	edgx_br_set_int_mask_irqsave(ts->parent, EDGX_COM_TS_INT_MASK_TX);
+	edgx_br_set_int_mask(ts->parent, EDGX_COM_TS_INT_MASK_TX);
 }
 
-u16 edgx_com_ts_isr(struct edgx_com_ts *ts, u16 intmask, u16 intstat)
+static irqreturn_t edgx_com_ts_isr(int irq, void *device)
 {
-	if (!(intmask & EDGX_COM_TS_INT_MASK_TX))
-		return intmask;
+	struct edgx_com_ts *ts = (struct edgx_com_ts *)device;
+	u16 intmask, intstat;
 
+	intmask = edgx_br_get_int_mask(ts->parent);
+	if (!(intmask & EDGX_COM_TS_INT_MASK_TX))
+		return IRQ_NONE;
+
+	intstat = edgx_br_get_int_stat(ts->parent);
 	if (!(intstat & EDGX_COM_TS_INT_MASK_TX))
-		return intmask;
+		return IRQ_NONE;
 
 	ts_dbg("COM TS: Isr.\n");
-
-	/* Disable TX interrupt until they are handled */
-	intmask &= ~EDGX_COM_TS_INT_MASK_TX;
-
+	/* Disable TX interrupt from until they are handled */
+	edgx_br_clr_int_mask(ts->parent, EDGX_COM_TS_INT_MASK_TX);
 	queue_work(ts->wq_tx, &ts->work_tx);
 
-	return intmask;
+	return IRQ_HANDLED;
 }
 
 void edgx_com_ts_rx(struct edgx_com_ts *ts, struct sk_buff *skb, ptcom_t ptcom)
@@ -383,6 +386,14 @@ int edgx_com_ts_init(struct edgx_com_ts *ts, const char *drv_name, int irq,
 	ts->irq = irq;
 	ts->parent = br;
 
+	ret = request_irq(irq, &edgx_com_ts_isr, IRQF_SHARED,
+			  drv_name, ts);
+	if (ret) {
+		edgx_err("COM TS: request_irq failed! ret=%d, irq=%d\n",
+			 ret, irq);
+		goto out_err_init_irq;
+	}
+
 	INIT_WORK(&ts->work_tx, &edgx_com_ts_work_tx);
 	ts->wq_tx = alloc_workqueue(drv_name,
 				    WQ_HIGHPRI | WQ_MEM_RECLAIM, 0);
@@ -405,7 +416,7 @@ int edgx_com_ts_init(struct edgx_com_ts *ts, const char *drv_name, int irq,
 		edgx_wr16(pts->iobase, EDGX_COM_TS_CTRL_RX, 0xffff);
 		edgx_wr16(pts->iobase, EDGX_COM_TS_CTRL_TX, 0xffff);
 	}
-	edgx_br_set_int_mask_irqsave(br, EDGX_COM_TS_INT_MASK_TX);
+	edgx_br_set_int_mask(br, EDGX_COM_TS_INT_MASK_TX);
 
 	return 0;
 
@@ -414,6 +425,8 @@ out_err_alloc:
 		kfree(ts->pts[i]);
 	destroy_workqueue(ts->wq_tx);
 out_err_alloc_work:
+	free_irq(ts->irq, ts);
+out_err_init_irq:
 	return ret;
 }
 
@@ -423,6 +436,7 @@ void edgx_com_ts_shutdown(struct edgx_com_ts *ts)
 	struct edgx_com_pts *pts;
 	unsigned long flags = 0;
 
+	free_irq(ts->irq, ts);
 	destroy_workqueue(ts->wq_tx);
 
 	for (i = 0; i < EDGX_BR_MAX_PORTS; i++) {
