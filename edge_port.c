@@ -1457,8 +1457,18 @@ int edgx_tc_setup(struct net_device *netdev, enum tc_setup_type type,
 	return 0;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 static u16 edgx_select_ep_queue(struct net_device *netdev, struct sk_buff *skb,
-			      struct net_device *sb_dev)
+			  struct net_device *sb_dev)
+#else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
+static u16 edgx_select_ep_queue(struct net_device *netdev, struct sk_buff *skb,
+			  struct net_device *sb_dev, select_queue_fallback_t fallback)
+#else
+static u16 edgx_select_ep_queue(struct net_device *netdev, struct sk_buff *skb,
+			  void *sb_dev, select_queue_fallback_t fallback)
+#endif
+#endif
 {
 	struct edgx_pt *pt;
 	int txq;
@@ -1475,11 +1485,29 @@ static u16 edgx_select_ep_queue(struct net_device *netdev, struct sk_buff *skb,
 
 		return txq;
 	} else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 		return netdev_pick_tx(netdev, skb, NULL) % netdev->real_num_tx_queues;
+#else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
+		return fallback(netdev, skb, NULL) % netdev->real_num_tx_queues;
+#else
+		return fallback(netdev, skb) % netdev->real_num_tx_queues;
+#endif
+#endif
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 static u16 edgx_select_brport_queue(struct net_device *netdev, struct sk_buff *skb,
 			      struct net_device *sb_dev)
+#else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
+static u16 edgx_select_brport_queue(struct net_device *netdev, struct sk_buff *skb,
+			      struct net_device *sb_dev, select_queue_fallback_t fallback)
+#else
+static u16 edgx_select_brport_queue(struct net_device *netdev, struct sk_buff *skb,
+			      void *sb_dev, select_queue_fallback_t fallback)
+#endif
+#endif
 {
 	struct edgx_pt *pt = net2pt(netdev);
 
