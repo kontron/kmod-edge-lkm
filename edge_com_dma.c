@@ -528,10 +528,13 @@ static int edgx_com_dma_xmit(struct edgx_com *com, struct sk_buff *skb,
 	if (edgx_dev2ptid(&skb->dev->dev) != PT_EP_ID) {
 		edgx_dbg("skb on q:%d for:%s ID:%d\n", skb->queue_mapping,
 			 skb->dev->name, edgx_dev2ptid(&skb->dev->dev));
+		/* Get the minimum between lowest priority HW queue or
+		   default traffic class to HW queue mapping */
 		q_idx = min((unsigned int)
-			    edgx_br_get_generic(com->parent,
-					    	BR_GX_DMA_TX_DESC_RINGS) - 1,
-			    mgmttc);
+			    dma->real_num_tx_queues - 1,
+			     (unsigned int)
+			    (dma->real_num_tx_queues - 1
+			    - edgx_get_tc_mgmtraffic(com->parent)));
 		skb_set_queue_mapping(skb, q_idx);
 	}
 
