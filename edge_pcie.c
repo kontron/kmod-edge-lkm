@@ -42,11 +42,14 @@
 #define EDGX_PCI_BR_OFFS	0x0000000
 #define EDGX_PCI_BR_SIZE	0x1ffffff
 #define EDGX_PCI_MDIO_BAR	0
-#define EDGX_PCI_MDIO_OFFS	0x2000000
+#define EDGX_PCI_MDIO_OFFS	0x4000000
 #define EDGX_PCI_MDIO_SIZE	0x3ff
 #define EDGX_PCI_PIO_BAR	2
 #define EDGX_PCI_PIO_OFFS	0xf0f00
 #define EDGX_PCI_PIO_SIZE	0x1f
+#define EDGX_PCI_I2C_BAR	5
+#define EDGX_PCI_I2C_OFFS	0x2000100
+#define EDGX_PCI_I2C_SIZE	0xff
 
 struct edgx_pci_drv {
 	struct edgx_br *br;
@@ -182,7 +185,8 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		}
 	}
 
-	i2c_base = pci_iomap(pdev, 5, 0);
+	i2c_base = pci_iomap_range(pdev, EDGX_PCI_I2C_BAR, EDGX_PCI_I2C_OFFS,
+				   EDGX_PCI_I2C_SIZE);
 	if (!i2c_base) {
 		dev_err(&pdev->dev, "Cannot map I2C device memory.\n");
 		ret = -ENOMEM;

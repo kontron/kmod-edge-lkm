@@ -26,22 +26,20 @@
 #define EEP_ADDR 0x51
 #define EEP_SIZE 256
 #define EEP_PAGE_SIZE 8
-#define PCI_BAR 5
-#define CSR_OFFSET 0x02010000
 #define CORE_CLK 100000000ULL
 
 enum {
-	TFR_CMD                  = (CSR_OFFSET + 0x0000),
-	RX_DATA                  = (CSR_OFFSET + 0x0004),
-	CTRL                     = (CSR_OFFSET + 0x0008),
-	ISER                     = (CSR_OFFSET + 0x000c),
-	ISR                      = (CSR_OFFSET + 0x0010),
-	STATUS                   = (CSR_OFFSET + 0x0014),
-	TFR_CMD_FIFO_LVL         = (CSR_OFFSET + 0x0018),
-	RX_DATA_FIFO_LVL         = (CSR_OFFSET + 0x001c),
-	SCL_LOW                  = (CSR_OFFSET + 0x0020),
-	SCL_HIGH                 = (CSR_OFFSET + 0x0024),
-	SDA_HOLD                 = (CSR_OFFSET + 0x0028),
+	TFR_CMD                  = 0x0000,
+	RX_DATA                  = 0x0004,
+	CTRL                     = 0x0008,
+	ISER                     = 0x000c,
+	ISR                      = 0x0010,
+	STATUS                   = 0x0014,
+	TFR_CMD_FIFO_LVL         = 0x0018,
+	RX_DATA_FIFO_LVL         = 0x001c,
+	SCL_LOW                  = 0x0020,
+	SCL_HIGH                 = 0x0024,
+	SDA_HOLD                 = 0x0028,
 };
 
 #define TFR_RW_D           (1 << 0)
