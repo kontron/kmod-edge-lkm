@@ -79,18 +79,6 @@ static struct pci_driver edgx_pci_driver = {
 static int edgx_pci_get_irq(struct pci_dev *pdev, struct edgx_br_irq *irq)
 {
 	int ret, i;
-#if 0
-	u8 *cra_base;
-
-	/* Avalon-MM to PCI Express Interrupt Status Enable Register setting */
-	cra_base = pci_iomap_range(pdev, 0, 0, 0x3fff);
-	if (!cra_base) {
-		dev_err(&pdev->dev, "Cannot map CRA device memory.\n");
-		return -ENOMEM;
-	}
-	*((u16 *)&cra_base[0x50]) = 0x2;
-	pci_iounmap(pdev, cra_base);
-#endif
 
 	ret = pci_alloc_irq_vectors(pdev, EDGX_IRQ_CNT, EDGX_IRQ_CNT,
 				    PCI_IRQ_MSI | PCI_IRQ_MSIX);
