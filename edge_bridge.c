@@ -97,14 +97,14 @@ struct _sysfs_grp {
 };
 
 static char *netif = "(none)";
-unsigned int mgmttc = -1;
+static unsigned int resmactc = 1;
 int csrating;
 char *syncmode = "1AS";
 
 module_param(netif, charp, 0444);
 MODULE_PARM_DESC(netif, "Bridge- and End Station tunnelling network interface (xMII connectivity only!)");
-module_param(mgmttc, uint, 0444);
-MODULE_PARM_DESC(mgmttc, "Management Traffic Class; defaults to highest available traffic class");
+module_param(resmactc, uint, 0444);
+MODULE_PARM_DESC(resmactc, "Traffic Class for Reserved MAC traffic; defaults to traffic class 1");
 module_param(syncmode, charp, 0444);
 MODULE_PARM_DESC(syncmode, "Time synchronization mode; IEEE 802.1AS (\"1AS\" - default) or IEEE 1588 (\"1588\")");
 module_param(csrating, int, 0444);
@@ -112,6 +112,11 @@ MODULE_PARM_DESC(csrating, "Clock-source rating; defaults to 0 (lowest rating)")
 
 /* list of instantiated bridges */
 static LIST_HEAD(br_list);
+
+u16 edgx_get_tc_mgmtraffic(struct edgx_br *br)
+{
+	return resmactc;
+}
 
 struct edgx_br *edgx_dev2br(struct device *dev)
 {

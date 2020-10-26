@@ -58,7 +58,6 @@ struct edgx_br_irq {
 	bool 				shared;
 };
 
-extern unsigned int mgmttc;
 extern int csrating;
 extern char *syncmode;
 extern struct attribute *ieee8021_brpt_common[];
@@ -112,6 +111,8 @@ struct edgx_br *edgx_dev2br(struct device *dev);
 
 u16      edgx_br_rdreg(struct edgx_br *br, size_t ofs);
 void     edgx_br_wrreg(struct edgx_br *br, size_t ofs, u16 val);
+
+u16 edgx_get_tc_mgmtraffic(struct edgx_br *br);
 
 #define edgx_br_err(_br, _fmt, ...) pr_err("bridge-%d: " _fmt,        \
 					   edgx_br_get_id(_br), ##__VA_ARGS__)

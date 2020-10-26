@@ -1,4 +1,3 @@
-
 // SPDX-License-Identifier: GPL-2.0
 /* TTTech EDGE/DE-IP Linux driver
  * Copyright(c) 2018 TTTech Computertechnik AG.
@@ -74,7 +73,8 @@ struct edgx_pt {
 #define _PT_STP_LEARN     0x1
 #define _PT_STP_DISABLED  0x2
 #define _MAX_PRIO_VAL	  (EDGX_BR_NUM_PCP - 1)
-#define _TX8_DEF_VAL	  0x76543201
+#define _TX8_DEF_VAL	  0x76543210
+#define _TX4_DEF_VAL	  0x33221100
 #define _PRIO_REGEN_LO	  0x16
 #define _PRIO_REGEN_HI	  0x18
 #define _QUEUE_TBL_LO	  0x20
@@ -304,16 +304,6 @@ static inline void edgx_pt_ipo_init_single(edgx_io_t *ipo_rbase,
 	edgx_pt_ipo_set_mac(ipo_rbase, ipo->mac);
 }
 
-static inline u16 edgx_get_tc_mgmtraffic(struct edgx_br *br)
-{
-	/* If traffic class for management traffic isn't set via a correct
-	 * value in module parameter mgmttc, the highest traffic class is
-	 * used.
-	 */
-	return(min((unsigned int)edgx_br_get_generic(br, BR_GX_QUEUES) - 1,
-			mgmttc));
-}
-
 static void edgx_pt_ipo_init(struct edgx_pt *pt, ptid_t mgmt_ptid)
 {
 	unsigned int entry;
@@ -324,10 +314,14 @@ static void edgx_pt_ipo_init(struct edgx_pt *pt, ptid_t mgmt_ptid)
 	for (entry = 0; entry < ARRAY_SIZE(ipo_mgmt); entry++) {
 		ipo_rbase = _IPO_BASE(pt->iobase);
 		edgx_pt_ipo_init_single(ipo_rbase, &ipo_mgmt[entry], entry);
-		/* Mgmt traffic uses highest traffic class by default */
-		if (mtc > 4)
-			edgx_set16(ipo_rbase, _IPO_REG_CFG0, 15, 15, mtc >> 2);
-		edgx_set16(ipo_rbase, _IPO_REG_CFG0, 13, 12, (mtc & 0x3));
+
+		/* write traffic class number for reserved MAC traffic to IPO
+		 * registers:
+		 */
+		/* write bit 0  to bit 15 of _IPO_REG_CFG0 */
+		edgx_set16(ipo_rbase, _IPO_REG_CFG0, 15, 15, (mtc & 0x1));
+		/* write bit 1 and 2 to bits 12 and 13 of _IPO_REG_CFG0 */
+		edgx_set16(ipo_rbase, _IPO_REG_CFG0, 13, 12, mtc >> 1);
 
 		/* Need to set FWD and MIRROR, so that mgmt frames also arrive
 		 * when in blocking state
@@ -677,7 +671,8 @@ static ssize_t prio_regen_tbl_write(struct file *filp, struct kobject *kobj,
 				    char *buf, loff_t ofs, size_t count)
 {
 	/* parameter buf contains value of priority
-	 * parameter ofs contains value of PCP */
+	 * parameter ofs contains value of PCP
+	 */
 	loff_t idx = 0;
 	struct edgx_pt *pt = edgx_dev2pt(kobj_to_dev(kobj));
 	size_t reg_ofs;
@@ -690,8 +685,6 @@ static ssize_t prio_regen_tbl_write(struct file *filp, struct kobject *kobj,
 
 	get_tc_prio_params(idx, _TYPE_PRIO_REGEN, &reg_ofs, &bithi, &bitlo);
 	edgx_set16(pt->iobase, reg_ofs, bithi, bitlo, ((u8 *)buf)[0]);
-	printk("%s: PCP: %d, priority: %d\n", __func__, (u8)idx), ((u8 *)buf)[0];
-
 	return count;
 }
 
@@ -700,7 +693,8 @@ static ssize_t traffic_class_tbl_write(struct file *filp, struct kobject *kobj,
 				       char *buf, loff_t ofs, size_t count)
 {
 	/* parameter buf contains value of traffic class
-	 * parameter ofs contains value of priority*/
+	 * parameter ofs contains value of priority
+	 */
 	loff_t idx = 0;
 	struct edgx_pt *pt = edgx_dev2pt(kobj_to_dev(kobj));
 	size_t reg_ofs;
@@ -708,12 +702,12 @@ static ssize_t traffic_class_tbl_write(struct file *filp, struct kobject *kobj,
 
 	if (edgx_sysfs_tbl_params(ofs, count, sizeof(u8), &idx) ||
 	    idx > _MAX_PRIO_VAL ||
-	    ((u8 *)buf)[0] > (edgx_br_get_generic(edgx_pt_get_br(pt), BR_GX_QUEUES) - 1))
+	    ((u8 *)buf)[0] > (edgx_br_get_generic(edgx_pt_get_br(pt),
+			    BR_GX_QUEUES) - 1))
 		return -EINVAL;
 
 	get_tc_prio_params(idx, _TYPE_QUEUE_TBL, &reg_ofs, &bithi, &bitlo);
 	edgx_set16(pt->iobase, reg_ofs, bithi, bitlo, ((u8 *)buf)[0]);
-	printk("%s: priority: %d, traffic class: %d\n", __func__, (u8)idx, ((u8 *)buf)[0]);
 
 	return count;
 }
@@ -723,7 +717,8 @@ static ssize_t prio_regen_tbl_read(struct file *filp, struct kobject *kobj,
 				   char *buf, loff_t ofs, size_t count)
 {
 	/* parameter buf contains value of priority
-	 * parameter ofs contains value of PCP */
+	 * parameter ofs contains value of PCP
+	 */
 	loff_t idx = 0;
 	struct edgx_pt *pt = edgx_dev2pt(kobj_to_dev(kobj));
 	size_t reg_ofs;
@@ -746,7 +741,8 @@ static ssize_t traffic_class_tbl_read(struct file *filp, struct kobject *kobj,
 				      char *buf, loff_t ofs, size_t count)
 {
 	/* parameter buf contains value of traffic class
-	 * parameter ofs contains value of priority*/
+	 * parameter ofs contains value of priority
+	 */
 	loff_t idx = 0;
 	struct edgx_pt *pt = edgx_dev2pt(kobj_to_dev(kobj));
 	size_t reg_ofs;
@@ -1424,10 +1420,9 @@ int edgx_tc_setup(struct net_device *netdev, enum tc_setup_type type,
 
 	edgx_pt_warn(pt, "edgx_tc_setup num_tc:%d\n", num_tc);
 
-	/* This is called by reset */
+	/* This is true on tc qdisc del */
 	if (!num_tc) {
 		netdev_reset_tc(netdev);
-		netdev_set_num_tc(netdev, num_tc);
 		return 0;
 	}
 
@@ -1438,7 +1433,6 @@ int edgx_tc_setup(struct net_device *netdev, enum tc_setup_type type,
 		return -EINVAL;
 	}
 
-
 	/* Do not change rx queues */
 	netdev_set_num_tc(netdev, num_tc);
 
@@ -1446,8 +1440,9 @@ int edgx_tc_setup(struct net_device *netdev, enum tc_setup_type type,
 	// netdev_set_prio_tc_map is done by the tc mqprio cmd so maybe do it at start
 
 	/* Each TC is associated with one netdev queue */
-	// TODO use offset and count from tc mqprio command?
-	for (i = 0; i < num_tc; i++)
+	/* Set TC to queue mapping 1 to 1 */
+	// TODO if used offset and count from tc mqprio command just output a warning as we do not support it
+	for (i = 0; i < num_tc; ++i)
 		netdev_set_tc_queue(netdev, i, 1, i);
 
 	return 0;
@@ -1456,22 +1451,11 @@ int edgx_tc_setup(struct net_device *netdev, enum tc_setup_type type,
 static u16 edgx_select_ep_queue(struct net_device *netdev, struct sk_buff *skb,
 			      struct net_device *sb_dev)
 {
-	struct edgx_pt *pt;
-	int txq;
-
 	edgx_dbg("edgx_select_ep_q\n");
 
-	if (sb_dev) {
-		u8 tc = netdev_get_prio_tc_map(netdev, skb->priority);
-		struct net_device *vdev = sb_dev;
-
-		txq = vdev->tc_to_txq[tc].offset;
-		txq += reciprocal_scale(skb_get_hash(skb),
-					vdev->tc_to_txq[tc].count);
-
-		return txq;
-	} else
-		return netdev_pick_tx(netdev, skb, NULL) % netdev->real_num_tx_queues;
+	/* Highest TC queue to highest HW queue -> 0 */
+	return (netdev_get_num_tc(netdev) - 1) -
+		(netdev_pick_tx(netdev, skb, NULL) % netdev->real_num_tx_queues);
 }
 
 static u16 edgx_select_brport_queue(struct net_device *netdev, struct sk_buff *skb,
@@ -2097,6 +2081,7 @@ int edgx_init_epport(struct edgx_br *br, struct edgx_pt **ppt)
 		// TODO: netdev_set_prio_tc_map to default ones??
 		netif_set_real_num_tx_queues(netdev, num_tx_queues);
 		netif_set_real_num_rx_queues(netdev, num_rx_queues);
+		netdev_set_num_tc(netdev, num_tx_queues);
 		// TODO set q len properly with define EDGX_DMA_DESC_CNT
 		netdev->tx_queue_len = (256 - 1) * 8; // Max queues x Desc number
 	} else {
@@ -2135,7 +2120,7 @@ int edgx_probe_brports(struct edgx_br *br, struct edgx_pt **ppt)
 	if (!ifd)
 		return -ENODEV;
 
-	edgx_br_info(br, "Traffic class for management traffic: %u\n",
+	edgx_br_info(br, "Traffic class for reserved MAC traffic: %u\n",
 			edgx_get_tc_mgmtraffic(br));
 
 	mgmt_ptid = edgx_com_get_mgmt_ptid(edgx_br_get_com(br));
@@ -2172,9 +2157,19 @@ int edgx_probe_brports(struct edgx_br *br, struct edgx_pt **ppt)
 		pt->hstat = edgx_stat_alloc_hdl(edgx_br_get_pt_stat(br, ptid),
 						ptid, &_pt_statinfo);
 
-		if (edgx_br_get_generic(edgx_pt_get_br(pt), BR_GX_QUEUES) ==
-				EDGX_BR_MAX_TC)
+		switch (edgx_br_get_generic(edgx_pt_get_br(pt), BR_GX_QUEUES)) {
+		case 8:
 			edgx_wr32(pt->iobase, _QUEUE_TBL_LO, _TX8_DEF_VAL);
+			break;
+		case 4:
+			edgx_wr32(pt->iobase, _QUEUE_TBL_LO, _TX4_DEF_VAL);
+			break;
+		default:
+			edgx_pt_err(pt,
+			"Unsupported number of traffic classes: %d.\n",
+			edgx_br_get_generic(edgx_pt_get_br(pt),
+						BR_GX_QUEUES));
+		}
 
 		edgx_wr16(_GEN_BASE(pt->iobase), 0x10, BIT(15));
 		edgx_set16(_GEN_BASE(pt->iobase), 0x0, 1, 0, _PT_STP_FWD);
