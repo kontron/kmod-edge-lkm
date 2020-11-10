@@ -233,7 +233,7 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dev_set_drvdata(&pdev->dev, pci_drv);
 
 	mdio_bus_id = edgx_mdio_get_id(pci_drv->mdio);
-	for (i = 0; i < 3; i++) {
+	for (i = 0; i < 4; i++) {
 		pt =  edgx_br_get_brpt(pci_drv->br, i + 1);
 		if (!pt) {
 			dev_err(&pdev->dev, "Cannot get port %d.\n", i + 1);
