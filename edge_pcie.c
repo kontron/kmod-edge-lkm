@@ -256,7 +256,7 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			goto probe_out_link;
 		}
 
-		edgx_link_set_delays(lnk, 6258, 679, 153, 2178, 362, 235);
+		edgx_link_set_delays(lnk, 1663, 156, 92, 1140, 180, 207);
 	}
 
 	tsnic_vpd_asset_tag(pci_drv->vpd, asset, sizeof(asset));
