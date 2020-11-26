@@ -2076,7 +2076,6 @@ int edgx_init_epport(struct edgx_br *br, struct edgx_pt **ppt)
 	struct net_device *netdev = NULL;
 
 	if (edgx_multiqueue_support_get(com, &num_tx_queues, &num_rx_queues)) {
-		u8 mac[ETH_ALEN];
 		char port_name[IFNAMSIZ];
 
 		snprintf(port_name, IFNAMSIZ, "sw%uep",
@@ -2104,9 +2103,7 @@ int edgx_init_epport(struct edgx_br *br, struct edgx_pt **ppt)
 		pt->parent = br;
 		pt->netdev = netdev;
 
-		ether_addr_copy(mac, edgx_br_get_mac(br));
-		mac[ETH_ALEN - 1] = (u8)pt->ptid;
-		ether_addr_copy(netdev->dev_addr, mac);
+		ether_addr_copy(netdev->dev_addr, edgx_br_get_mac(br));
 
 		pt->hcom = edgx_com_reg_pt(edgx_br_get_com(br), pt);
 		if (!pt->hcom) {
