@@ -16,7 +16,11 @@ ifndef target
   $(info Defaulting to PLATFORM host interface driver)
 endif
 
+ifeq ($(target),pcie_c10)
+edge_lkm_mod   := edgx_lkm_c10
+else
 edge_lkm_mod   := edgx_lkm
+endif
 
 obj-m += $(edge_lkm_mod).o
 
@@ -51,6 +55,10 @@ endif
 
 ifeq ($(target),pcie)
 $(edge_lkm_mod)-objs += edge_pcie.o
+endif
+
+ifeq ($(target),pcie_c10)
+$(edge_lkm_mod)-objs += edge_pcie_c10.o
 endif
 
 all :

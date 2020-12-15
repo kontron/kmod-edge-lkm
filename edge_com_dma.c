@@ -39,8 +39,8 @@
 /* #define EDGX_COM_DMA_DBG_SHORT */
 #define EDGX_DMA_EDGE_TRIG_WORKAROUND
 
-#define EDGX_DMA_TX_QUEUE_CNT           (8U)	/* Max number of supported TX queues */
-#define EDGX_DMA_RX_QUEUE_CNT		(1U)	/* No support for multi-q RX */
+#define EDGX_DMA_TX_QUEUE_CNT	(8U)	/* Max number of supported TX queues */
+#define EDGX_DMA_RX_QUEUE_CNT	(1U)	/* No support for multi-q RX */
 
 #define DMA_ITF_OFFS			(0xA000)
 #define EDGX_DMA_CFG			(0x0)
@@ -233,7 +233,7 @@ static int edgx_dma_queue_init(struct edgx_dma_queue *q, struct device *dev,
 	edgx_wr16(dma_base, EDGX_DMA_RING_CFG1(idx), q->desc_bus_addr >> 16);
 
 	// TODO We are leaking some kernel memory layout by using %px here
-	edgx_dbg("DMA: queue_init: desc=%px, bus_addr=0x%x\n",
+	edgx_dbg("DMA: queue_init: desc=%px, bus_addr=0x%llx\n",
 		 q->desc, q->desc_bus_addr);
 	return 0;
 
@@ -409,7 +409,8 @@ static inline int edgx_dma_enq_tx(struct edgx_dma_queue *q,
 		edgx_dbg("DMA enq Tx: stop netdev %s\n", skb->dev->name);
 		kfifo_put(&q->pending_devs, skb->dev);
 		if (edgx_dev2ptid(dev) == PT_EP_ID)
-			netif_stop_subqueue(skb->dev, skb_get_queue_mapping(skb));
+			netif_stop_subqueue(skb->dev,
+					    skb_get_queue_mapping(skb));
 		else
 			netif_stop_queue(skb->dev);
 	}
@@ -449,7 +450,8 @@ static inline struct sk_buff *edgx_dma_deq_tx(struct edgx_dma_queue *q,
 	if (skb && kfifo_get(&q->pending_devs, &pend_dev)) {
 		edgx_dbg("DMA deq Tx: wake netdev %s\n", pend_dev->name);
 		if (edgx_dev2ptid(dev) == PT_EP_ID)
-			netif_wake_subqueue(pend_dev, skb_get_queue_mapping(skb));
+			netif_wake_subqueue(pend_dev,
+					    skb_get_queue_mapping(skb));
 		else
 			netif_wake_queue(pend_dev);
 	}
@@ -476,7 +478,8 @@ static int edgx_dma_process_tx(struct edgx_com_dma *dma, int budget)
 	for (i = 0, j = 0;
 	     (i < budget) && (j < dma->real_num_tx_queues); ++j) {
 		do {
-			skb = edgx_dma_deq_tx(&dma->tx_queue[j], dev, &err_cnt); //TODO Based on q prio?
+			//TODO Based on q prio?
+			skb = edgx_dma_deq_tx(&dma->tx_queue[j], dev, &err_cnt);
 
 			if (skb)
 				/* TODO: Add DMA error counters? */
@@ -529,7 +532,8 @@ static int edgx_com_dma_xmit(struct edgx_com *com, struct sk_buff *skb,
 		edgx_dbg("skb on q:%d for:%s ID:%d\n", skb->queue_mapping,
 			 skb->dev->name, edgx_dev2ptid(&skb->dev->dev));
 		/* Get the minimum between lowest priority HW queue or
-		   default traffic class to HW queue mapping */
+		 * default traffic class to HW queue mapping
+		 */
 		q_idx = min((unsigned int)
 			    dma->real_num_tx_queues - 1,
 			     (unsigned int)
@@ -663,10 +667,11 @@ void edgx_com_dma_tx_timeout(struct edgx_com *com, struct net_device *netdev)
 	// TODO Will this actually work?
 	for (i = 0; i < netdev->real_num_tx_queues; ++i)
 		if (__netif_subqueue_stopped(netdev, i))
-			netif_wake_subqueue(netdev, i); //TODO Wake up all quues??
+			netif_wake_subqueue(netdev, i);//TODO Wake up all quues?
 }
 
-bool edgx_com_dma_multiqueue_support(struct edgx_com *com, u8 *num_tx_queues, u8 *num_rx_queues)
+bool edgx_com_dma_multiqueue_support(struct edgx_com *com, u8 *num_tx_queues,
+				     u8 *num_rx_queues)
 {
 	struct edgx_com_dma *dma = edgx_com_to_dma(com);
 
@@ -704,12 +709,14 @@ static ssize_t dma_dump_all_show(struct device *dev,
 
 	desc_reg = edgx_rd16(dma->tx_queue[0].cfg_base,
 			     EDGX_DMA_DESC_P(dma->tx_queue[0].idx));
-	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "Tx initialized=%d, used=%d\n",
+	ret += scnprintf(buf + ret, PAGE_SIZE - ret,
+			 "Tx initialized=%d, used=%d\n",
 			 desc_reg & 0xff, desc_reg >> 8);
 
 	desc_reg = edgx_rd16(dma->rx_queue[0].cfg_base,
 			     EDGX_DMA_DESC_P(dma->rx_queue[0].idx));
-	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "Rx initialized=%d, used=%d\n",
+	ret += scnprintf(buf + ret, PAGE_SIZE - ret,
+			 "Rx initialized=%d, used=%d\n",
 			 desc_reg & 0xff, desc_reg >> 8);
 
 	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "DMA TX QUEUE:\n");
@@ -910,7 +917,8 @@ static int edgx_com_dma_init(struct edgx_com_dma *dma, struct edgx_br *br,
 	netif_napi_add(&dma->napi_dev, &dma->napi_rx,
 		       edgx_dma_poll_rx, EDGX_DMA_RX_WEIGHT);
 
-	dma->real_num_tx_queues = edgx_br_get_generic(br, BR_GX_DMA_TX_DESC_RINGS);
+	dma->real_num_tx_queues = edgx_br_get_generic(br,
+						      BR_GX_DMA_TX_DESC_RINGS);
 
 	for (i = 0; !ret && (i < dma->real_num_tx_queues); i++)
 		ret = edgx_dma_queue_init(&dma->tx_queue[i], dev,

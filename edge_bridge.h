@@ -55,7 +55,7 @@ enum edgx_br_irq_trig_type {
 struct edgx_br_irq {
 	int				irq_vec[EDGX_IRQ_CNT];
 	enum edgx_br_irq_trig_type	trig;
-	bool 				shared;
+	bool				shared;
 };
 
 extern int csrating;

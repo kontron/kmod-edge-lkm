@@ -116,7 +116,9 @@ static void edgx_com_xmii_shutdown(struct edgx_com *com)
 	kfree(xmii);
 }
 
-static bool edgx_com_xmii_multiqueue_support(struct edgx_com *com, u8 *num_tx_queues, u8 *num_rx_queues)
+static bool edgx_com_xmii_multiqueue_support(struct edgx_com *com,
+					     u8 *num_tx_queues,
+					     u8 *num_rx_queues)
 {
 	struct edgx_com_xmii *xmii = edgx_com_to_xmii(com);
 

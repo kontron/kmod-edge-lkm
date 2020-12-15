@@ -67,10 +67,10 @@ static const u8 *edgx_com_get_ptp_hdr(struct sk_buff *skb)
 	return ptp_hdr;
 }
 
-static void edgx_com_ts_read(edgx_io_t *ts_base, struct timespec64 *cur_time,
-			     ktime_t *timestamp, u16 *hdr, u16 hdr_size)
+static int edgx_com_ts_read(edgx_io_t *ts_base, struct timespec64 *cur_time,
+			    ktime_t *timestamp, u16 *hdr, u16 hdr_size)
 {
-	u64 sec, full_sec;
+	u64 sec, full_sec, full_sec_tmp;
 	u32 nsec;
 	u16 edgx_hdr[2] = {0};
 	u16 time_hi, time_lo;
@@ -99,25 +99,40 @@ static void edgx_com_ts_read(edgx_io_t *ts_base, struct timespec64 *cur_time,
 	 * Get full seconds for bitwidth-limited timestamper seconds.
 	 * There is no way to know amount of time passed between timestamper
 	 * and current time from PTP clock, assume max. 1 s has passed.
+	 *
+	 * Normally cur_time is captured after the timestamp is taken. However,
+	 * a new timestamp can arrive also in the small time window after
+	 * cur_time is captured. Therefore full_sec can be either larger
+	 * or smaller than sec and the match must be evaluated in both
+	 * directions.
 	 */
 	full_sec = cur_time->tv_sec;
 
-	if ((full_sec & 0x1ull) != (sec & 0x1ull))
-		full_sec--;
-	if ((full_sec & EDGX_COM_TS_FULLSEC_MASK) != sec)
-		return;
+	if ((full_sec & EDGX_COM_TS_FULLSEC_MASK) != sec) {
+		full_sec_tmp = full_sec - 1;
+		if ((full_sec_tmp & EDGX_COM_TS_FULLSEC_MASK) != sec) {
+			full_sec_tmp = full_sec + 1;
+			if ((full_sec_tmp & EDGX_COM_TS_FULLSEC_MASK) != sec)
+				return -EINVAL;
+		}
+		full_sec = full_sec_tmp;
+	}
+
 
 	nsec &= EDGX_COM_TS_FULL_NSEC_MASK;
 	set_normalized_timespec64(&hwts, full_sec, (long)nsec);
 	*timestamp = timespec64_to_ktime(hwts);
+	return 0;
 }
 
-static void edgx_com_ts_read_rx(struct edgx_com_pts *pts,
-				struct timespec64 *cur_time,
-				ktime_t *timestamp, u16 *hdr, u16 hdr_size)
+static int edgx_com_ts_read_rx(struct edgx_com_pts *pts,
+			       struct timespec64 *cur_time,
+			       ktime_t *timestamp, u16 *hdr, u16 hdr_size)
 {
+	int ret;
 	u16 reg;
 
+	spin_lock_bh(pts->ts_lock);
 	/* Write command to read the value from RX timestamp for current port */
 	edgx_wr16(pts->iobase, EDGX_COM_TS_CMD_BASE,
 		  (pts->ptid | EDGX_COM_RX_TS_READ_CMD
@@ -129,16 +144,20 @@ static void edgx_com_ts_read_rx(struct edgx_com_pts *pts,
 				 EDGX_COM_TRANSFER_TS_CMD);
 	} while (reg);
 
-	edgx_com_ts_read(pts->iobase, cur_time, timestamp, hdr, hdr_size);
+	ret = edgx_com_ts_read(pts->iobase, cur_time, timestamp, hdr, hdr_size);
+	spin_unlock_bh(pts->ts_lock);
 	edgx_dbg("ts_read_rx: %*ph\n", 2*EDGX_COM_TS_HDR_LEN, (u8 *)hdr);
+	return ret;
 }
 
-static void edgx_com_ts_read_tx(struct edgx_com_pts *pts,
-				struct timespec64 *cur_time,
-				ktime_t *timestamp, u16 *hdr, u16 hdr_size)
+static int edgx_com_ts_read_tx(struct edgx_com_pts *pts,
+			       struct timespec64 *cur_time,
+			       ktime_t *timestamp, u16 *hdr, u16 hdr_size)
 {
+	int ret;
 	u16 reg;
 
+	spin_lock_bh(pts->ts_lock);
 	/* Write command to read the value from TX timestamp for current port */
 	edgx_wr16(pts->iobase, EDGX_COM_TS_CMD_BASE,
 		  (pts->ptid | EDGX_COM_TX_TS_READ_CMD
@@ -150,14 +169,17 @@ static void edgx_com_ts_read_tx(struct edgx_com_pts *pts,
 				 EDGX_COM_TRANSFER_TS_CMD);
 	} while (reg);
 
-	edgx_com_ts_read(pts->iobase, cur_time, timestamp, hdr, hdr_size);
+	ret = edgx_com_ts_read(pts->iobase, cur_time, timestamp, hdr, hdr_size);
+	spin_unlock_bh(pts->ts_lock);
 	edgx_dbg("ts_read_tx: %*ph\n", 2*EDGX_COM_TS_HDR_LEN, (u8 *)hdr);
+	return ret;
 }
 
 static void edgx_com_ts_find_tx(struct edgx_com_pts *pts,
 				struct timespec64 *cur_time)
 {
 	int i = 0;
+	int ts_ret;
 	const u8 *hdr, *ts_hdr_u8, hdr_position[4] = {0, 4, 30, 31};
 	struct skb_shared_hwtstamps hwts;
 	struct sk_buff *found_skb = NULL;
@@ -166,14 +188,13 @@ static void edgx_com_ts_find_tx(struct edgx_com_pts *pts,
 	/* First read the register for the TX timestamp status */
 	u16 ts_ctrl = edgx_rd16(pts->iobase, EDGX_COM_TS_TX_STATUS);
 	/* If the port bit is set there is a timestamp ready to be used */
-	if (ts_ctrl & BIT(pts->ptid)) {
-		edgx_com_ts_read_tx(pts, cur_time,
-				    &hwts.hwtstamp,
-				    ts_hdr, EDGX_COM_TS_HDR_LEN);
+	while (ts_ctrl & BIT(pts->ptid)) {
+		ts_ret = edgx_com_ts_read_tx(pts, cur_time,
+					     &hwts.hwtstamp,
+					     ts_hdr, EDGX_COM_TS_HDR_LEN);
 
-		while (!kfifo_is_empty(&pts->tx_queue)) {
-			kfifo_out_spinlocked(&pts->tx_queue, &found_skb,
-						1, &pts->lock);
+		while (kfifo_out_spinlocked(&pts->tx_queue, &found_skb,
+					    1, &pts->lock)) {
 			hdr = edgx_com_get_ptp_hdr(found_skb);
 			ts_hdr_u8 = (u8 *)&ts_hdr[0];
 			for (i = 0; i < 4; ++i)
@@ -191,13 +212,22 @@ static void edgx_com_ts_find_tx(struct edgx_com_pts *pts,
 		}
 
 		if (found_skb) {
-			skb_shinfo(found_skb)->tx_flags |=
-					    SKBTX_HW_TSTAMP | SKBTX_IN_PROGRESS;
-			edgx_dbg("%s: ts=%llu, pos=%u\n",
-				 __func__, hwts.hwtstamp, i);
-			edgx_com_txts_dispatch(found_skb, &hwts);
+			/* Matching frame found, but timestamp is invalid. */
+			if (ts_ret) {
+				edgx_err("%s: Cannot calculate port%u timestamp!\n",
+					 __func__, pts->ptid);
+				dev_kfree_skb_any(found_skb);
+			} else {
+				skb_shinfo(found_skb)->tx_flags |=
+					   SKBTX_HW_TSTAMP | SKBTX_IN_PROGRESS;
+				edgx_dbg("%s: ts=%llu, pos=%u\n",
+					 __func__, hwts.hwtstamp, i);
+				edgx_com_txts_dispatch(found_skb, &hwts);
+			}
 		} else
 			edgx_err("%s(): Could not find skb!\n", __func__);
+		/* Read TX timestamp status for next loop */
+		ts_ctrl = edgx_rd16(pts->iobase, EDGX_COM_TS_TX_STATUS);
 	}
 }
 
@@ -206,6 +236,7 @@ static void edgx_com_ts_find_rx(struct edgx_com_pts *pts, const u16 *hdr,
 {
 	const u8 *hdr_u8, *ts_hdr_u8, hdr_position[4] = {0, 4, 30, 31};
 	int i = 0;
+	int ts_ret;
 	u16 ts_hdr[EDGX_COM_TS_HDR_LEN] = {0};
 	ktime_t tmp_time;
 	u16 ts_ctrl;
@@ -215,14 +246,20 @@ static void edgx_com_ts_find_rx(struct edgx_com_pts *pts, const u16 *hdr,
 	ts_ctrl = edgx_rd16(pts->iobase, EDGX_COM_TS_RX_STATUS);
 	/* If the port bit is set there is a timestamp ready to be used */
 	while (ts_ctrl & BIT(pts->ptid)) {
-		edgx_com_ts_read_rx(pts, cur_time, &tmp_time,
-				    ts_hdr, EDGX_COM_TS_HDR_LEN);
+		ts_ret = edgx_com_ts_read_rx(pts, cur_time, &tmp_time,
+					     ts_hdr, EDGX_COM_TS_HDR_LEN);
 		ts_hdr_u8 = (u8 *)&ts_hdr[0];
 		for (i = 0; i < 4; ++i)
 			if (memcmp(&ts_hdr_u8[hdr_position[i]],
 				   &hdr_u8[hdr_position[i]], sizeof(u8)))
 				break;
 		if (i == 4) {
+			/* Matching frame found, but timestamp is invalid. */
+			if (ts_ret) {
+				edgx_err("%s: Cannot calculate port%u timestamp!\n",
+					 __func__, pts->ptid);
+				break;
+			}
 			*time = tmp_time;
 			edgx_dbg("%s: ts=%lld, port=%d\n",
 				 __func__, *time, pts->ptid);
@@ -306,10 +343,13 @@ struct sk_buff *edgx_com_ts_xmit(struct edgx_com_ts *ts,
 {
 	const u8            *ptp_hdr;
 	struct sk_buff      *skb_backup = NULL;
-	struct edgx_com_pts *pts = ts->pts[ffs(ptcom) - 1];
+	struct edgx_com_pts *pts;
+	ptid_t 		     ptid = ffs(ptcom) - 1;
 
-	if (!pts)
+	if ((ptid == PT_EP_ID) || !ts->pts[ptid])
 		return skb;
+
+	pts = ts->pts[ptid];
 
 	ptp_hdr = edgx_com_get_ptp_hdr(skb);
 	if (!ptp_hdr)
@@ -418,8 +458,10 @@ int edgx_com_ts_init(struct edgx_com_ts *ts, edgx_io_t *mngmnt_base,
 		goto out_err_alloc_work;
 	}
 
+	spin_lock_init(&ts->ts_lock);
+
 	edgx_ac_for_each_ifpt(ptid, ifd, &pifd) {
-		if (strncmp(syncmode, "1AS", 3) && (ptid == 0))
+		if (!strncmp(syncmode, "1AS", 3) && (ptid == 0))
 			continue;
 
 		pts = kzalloc(sizeof(*pts), GFP_KERNEL);
@@ -431,6 +473,7 @@ int edgx_com_ts_init(struct edgx_com_ts *ts, edgx_io_t *mngmnt_base,
 		spin_lock_init(&pts->lock);
 		pts->iobase = mngmnt_base + EDGX_COM_TS_PORT_OFS;
 		pts->ptid = ptid;
+		pts->ts_lock = &ts->ts_lock;
 		ts->pts[ptid] = pts;
 	}
 	for (i = 0; i < EDGX_BR_MAX_PORTS; i++)
@@ -458,9 +501,8 @@ void edgx_com_ts_shutdown(struct edgx_com_ts *ts)
 	for (i = 0; i < EDGX_BR_MAX_PORTS; i++) {
 		pts = ts->pts[i];
 		if (pts) {
-			while (!kfifo_is_empty(&pts->tx_queue)) {
-				kfifo_out_spinlocked(&pts->tx_queue,
-						     &skb, 1, &pts->lock);
+			while (kfifo_out_spinlocked(&pts->tx_queue,
+						    &skb, 1, &pts->lock)) {
 				dev_kfree_skb_any(skb);
 			}
 			kfree(pts);

@@ -29,6 +29,8 @@
 #include <linux/interrupt.h>
 #include <linux/version.h>
 #include <linux/phy.h>
+#include <linux/mfd/core.h>
+#include <linux/platform_device.h>
 #include "edge_bridge.h"
 #include "edge_port.h"
 #include "edge_link.h"
@@ -36,42 +38,80 @@
 #include "altera_pio.h"
 
 #define PFX			"EDGX-PCIe: "
-#define DRV_NAME		"edgx-pcie"
-#define VENDOR_ID		(0x1059)
+#define DRV_NAME		"edgx-pcie-c10"
+#define VENDOR_ID		(0x1c7e)
 #define DEVICE_ID		(0xa100)
 #define SUBVENDOR_ID		(0x1c7e)
-#define SUBDEVICE_ID		(0x132)
+#define SUBDEVICE_ID		(0x134)
 #define EDGX_PCI_BR_BAR		(0U)
-#define EDGX_PCI_BR_OFFS	(0x6000000)
+#define EDGX_PCI_BR_OFFS	(0x2000000)
 #define EDGX_PCI_BR_SIZE	(0x1ffffff)
-#define EDGX_PCI_MDIO_BAR	(1U)
-#define EDGX_PCI_MDIO_OFFS	(0x0)
-#define EDGX_PCI_MDIO_SIZE	(0x3ff)
-#define EDGX_PCI_PIO_BAR	(2U)
-#define EDGX_PCI_PIO_OFFS	(0xf0f00)
-#define EDGX_PCI_PIO_SIZE	(0x1f)
+#define EDGX_PCI_I2C_BAR	(1U)
+#define EDGX_PCI_I2C_OFFS	(0x0)
+#define EDGX_PCI_I2C_SIZE	(0x80)
 
 struct edgx_pci_drv {
 	struct edgx_br *br;
-	struct edgx_mdio *mdio;
-	struct flx_pio_dev_priv *pio;
+	struct altr_i2c_dev *i2c_base;
 	struct edgx_br_irq irq;
 };
 
-static const struct pci_device_id edgx_pci_ids[] = {
+static const struct pci_device_id edgx_pci_ids[] =
+{
 	{PCI_DEVICE_SUB(VENDOR_ID, DEVICE_ID, SUBVENDOR_ID, SUBDEVICE_ID)},
 	{}
 };
 
+static struct resource i2c_res[] = {
+	{
+		.start = 0x40,
+		.end =   0x7f,
+		.flags = IORESOURCE_MEM,
+	},
+	{
+		.start = 0,
+		.end = 0,
+		.flags = IORESOURCE_IRQ,
+	},
+};
+
+static struct resource i2c_res2[] = {
+	{
+		.start = 0x0,
+		.end =   0x3f,
+		.flags = IORESOURCE_MEM,
+	},
+	{
+		.start = 1,
+		.end = 1,
+		.flags = IORESOURCE_IRQ,
+	},
+};
+
+static struct mfd_cell i2c_cell[] = {
+	{
+		.id = 1,
+		.name = "altera-i2c",
+		.of_compatible = "altr,softip-i2c-v1.0",
+		.num_resources = ARRAY_SIZE(i2c_res),
+		.resources = i2c_res,
+	},
+	{
+		.id = 2,
+		.name = "altera-i2c",
+		.of_compatible = "altr,softip-i2c-v1.0",
+		.num_resources = ARRAY_SIZE(i2c_res2),
+		.resources = i2c_res2,
+	}
+};
+
 static int bridge_id;
-static int mdio_id;
-static int pio_id;
 
 static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id);
 static void edgx_pci_remove(struct pci_dev *pdev);
 
 static struct pci_driver edgx_pci_driver = {
-	.name = "edgx-pci",
+	.name = DRV_NAME,
 	.id_table = edgx_pci_ids,
 	.probe = &edgx_pci_probe,
 	.remove = &edgx_pci_remove,
@@ -93,8 +133,10 @@ static int edgx_pci_get_irq(struct pci_dev *pdev, struct edgx_br_irq *irq)
 
 	ret = pci_alloc_irq_vectors(pdev, EDGX_IRQ_CNT, EDGX_IRQ_CNT,
 				    PCI_IRQ_MSI | PCI_IRQ_MSIX);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(&pdev->dev, "pci_alloc_irq_vectors failed: %d!\n", ret);
 		return ret;
+	}
 
 	if (ret != EDGX_IRQ_CNT) {
 		dev_err(&pdev->dev, "Invalid IRQ count = %d!\n", ret);
@@ -112,7 +154,7 @@ static int edgx_pci_get_irq(struct pci_dev *pdev, struct edgx_br_irq *irq)
 			pci_free_irq_vectors(pdev);
 			return ret;
 		}
-		dev_info(&pdev->dev, "IRQ-vector %d: %d\n", i, irq->irq_vec[i]);
+		dev_dbg(&pdev->dev, "IRQ-vector %d: %d\n", i, irq->irq_vec[i]);
 	}
 
 	return 0;
@@ -122,70 +164,19 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	int ret, i;
 	void *br_base;
-	void *mdio_base;
-	void *pio_base;
+	void *i2c_base;
+	int i2c_irqbase;
 	struct edgx_pci_drv *pci_drv;
-	const char *mdio_bus_id;
-	char mdio_bus_id_pt[MII_BUS_ID_SIZE + 4];
 	struct edgx_pt *pt;
 	struct edgx_link *lnk;
 
 	ret = pci_enable_device(pdev);
 	if (ret) {
 		dev_err(&pdev->dev, "Cannot enable PCI device.\n");
-		goto probe_out_enable;
+		return ret;
 	}
 
 	pci_set_master(pdev);
-	pr_info("pci_try_set_mwi: %d\n", pci_try_set_mwi(pdev));
-
-	if (!(pci_resource_flags(pdev, 0) & IORESOURCE_MEM)) {
-		dev_err(&pdev->dev, "Invalid BAR0 resource flags.\n");
-		ret = -ENODEV;
-		goto probe_out_res_flag;
-	}
-
-	if (!(pci_resource_flags(pdev, 1) & IORESOURCE_MEM)) {
-		dev_err(&pdev->dev, "Invalid BAR1 resource flags.\n");
-		ret = -ENODEV;
-		goto probe_out_res_flag;
-	}
-
-	if (!(pci_resource_flags(pdev, 2) & IORESOURCE_MEM)) {
-		dev_err(&pdev->dev, "Invalid BAR2 resource flags.\n");
-		ret = -ENODEV;
-		goto probe_out_res_flag;
-	}
-
-	ret = pci_request_regions(pdev, DRV_NAME);
-	if (ret) {
-		dev_err(&pdev->dev, "Cannot get PCI resource.\n");
-		goto probe_out_res_flag;
-	}
-
-	br_base = pci_iomap_range(pdev, EDGX_PCI_BR_BAR,
-				  EDGX_PCI_BR_OFFS, EDGX_PCI_BR_SIZE);
-	if (!br_base) {
-		dev_err(&pdev->dev, "Cannot map bridge device memory.\n");
-		ret = -ENOMEM;
-		goto probe_out_iomap_br;
-	}
-
-	mdio_base = pci_iomap_range(pdev, EDGX_PCI_MDIO_BAR,
-				    EDGX_PCI_MDIO_OFFS, EDGX_PCI_MDIO_SIZE);
-	if (!mdio_base) {
-		dev_err(&pdev->dev, "Cannot map MDIO device memory.\n");
-		ret = -ENOMEM;
-		goto probe_out_iomap_mdio;
-	}
-
-	pio_base = pci_iomap_range(pdev, EDGX_PCI_PIO_BAR,
-				   EDGX_PCI_PIO_OFFS, EDGX_PCI_PIO_SIZE);
-	if (!pio_base) {
-		dev_err(&pdev->dev, "Cannot map PIO device memory.\n");
-		ret = -ENOMEM;
-		goto probe_out_iomap_pio;
-	}
 
 	pci_drv = kzalloc(sizeof(*pci_drv), GFP_KERNEL);
 	if (!pci_drv) {
@@ -197,80 +188,58 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		goto probe_out_irq;
 
-	ret = flx_pio_probe_one(pio_id, &pdev->dev, pio_base,
-				&pci_drv->pio);
-	if (ret)
-		goto probe_out_pio;
-	pio_id++;
+	i2c_irqbase = pci_drv->irq.irq_vec[7];
 
-	ret = edgx_mdio_probe_one(mdio_id, &pdev->dev, mdio_base,
-				  &pci_drv->mdio);
-	if (ret)
-		goto probe_out_mdio;
-	mdio_id++;
+	ret =  devm_mfd_add_devices(&pdev->dev, PLATFORM_DEVID_NONE, i2c_cell,
+			      	    ARRAY_SIZE(i2c_cell),
+				    &pdev->resource[EDGX_PCI_I2C_BAR],
+				    i2c_irqbase, NULL);
+	if (ret) {
+		dev_err(&pdev->dev, "MFD add I2C devices failed: %d\n", ret);
+		goto probe_out_mdf_add;
+	}
+
+	if (!(pci_resource_flags(pdev, 0) & IORESOURCE_MEM)) {
+		dev_err(&pdev->dev, "Invalid BAR0 resource flags.\n");
+		ret = -ENODEV;
+		goto probe_out_res_flag;
+	}
+
+	ret = pci_request_region(pdev, EDGX_PCI_BR_BAR, DRV_NAME);
+	if (ret) {
+		dev_err(&pdev->dev, "Cannot get PCI resource.\n");
+		goto probe_out_res_flag;
+	}
+
+	br_base = pci_iomap_range(pdev, EDGX_PCI_BR_BAR,
+				  EDGX_PCI_BR_OFFS, EDGX_PCI_BR_SIZE);
+	if (!br_base) {
+		dev_err(&pdev->dev, "Cannot map bridge device memory.\n");
+		ret = -ENOMEM;
+		goto probe_out_iomap_range;
+	}
 
 	ret = edgx_br_probe_one(bridge_id, &pdev->dev, br_base, &pci_drv->irq,
 				&pci_drv->br);
 	if (ret)
 		goto probe_out_bridge;
+
 	bridge_id++;
-
 	dev_set_drvdata(&pdev->dev, pci_drv);
-
-	mdio_bus_id = edgx_mdio_get_id(pci_drv->mdio);
-	for (i = 0; i < 4; i++) {
-		pt =  edgx_br_get_brpt(pci_drv->br, i + 1);
-		if (!pt) {
-			dev_err(&pdev->dev, "Cannot get port %d.\n", i + 1);
-			goto probe_out_link;
-		}
-
-		lnk = edgx_pt_get_link(pt);
-		if (!pt) {
-			dev_err(&pdev->dev, "Cannot get port %d link.\n",
-				i + 1);
-			goto probe_out_link;
-		}
-
-		snprintf(mdio_bus_id_pt, MII_BUS_ID_SIZE, "%s:%02d",
-			 mdio_bus_id, i);
-
-		if (edgx_link_set_mdiobus(lnk, mdio_bus_id_pt)) {
-			dev_err(&pdev->dev, "Cannot set port %d link.\n",
-				i + 1);
-			goto probe_out_link;
-		}
-
-		/* Min delays for Marvell 88E1510P - standard latency mode */
-		edgx_link_set_delays(lnk, 4032, 412, 109, 1083, 220, 203);
-	}
-
 	return ret;
 
-probe_out_link:
-	edgx_br_shutdown(pci_drv->br);
-	bridge_id--;
 probe_out_bridge:
-	edgx_mdio_shutdown(pci_drv->mdio);
-	mdio_id--;
-probe_out_mdio:
-	flx_pio_shutdown(pci_drv->pio);
-	pio_id--;
-probe_out_pio:
+	pci_iounmap(pdev, br_base);
+probe_out_iomap_range:
+	pci_release_regions(pdev);
+probe_out_res_flag:
+	mfd_remove_devices(&pdev->dev);
+probe_out_mdf_add:
 	pci_free_irq_vectors(pdev);
 probe_out_irq:
 	kfree(pci_drv);
 probe_out_drv_alloc:
-	pci_iounmap(pdev, pio_base);
-probe_out_iomap_pio:
-	pci_iounmap(pdev, mdio_base);
-probe_out_iomap_mdio:
-	pci_iounmap(pdev, br_base);
-probe_out_iomap_br:
-	pci_release_regions(pdev);
-probe_out_res_flag:
 	pci_disable_device(pdev);
-probe_out_enable:
 	return ret;
 }
 
@@ -278,25 +247,17 @@ static void edgx_pci_remove(struct pci_dev *pdev)
 {
 	struct edgx_pci_drv *pci_drv = dev_get_drvdata(&pdev->dev);
 	void *br_base;
-	void *mdio_base;
-	void *pio_base;
 
 	if (!pci_drv)
 		return;
 
 	br_base = edgx_br_get_base(pci_drv->br);
-	mdio_base = edgx_mdio_get_base(pci_drv->mdio);
-	pio_base = flx_pio_get_base(pci_drv->pio);
-
 	edgx_br_shutdown(pci_drv->br);
-	edgx_mdio_shutdown(pci_drv->mdio);
-	flx_pio_shutdown(pci_drv->pio);
-	pci_free_irq_vectors(pdev);
-	kfree(pci_drv);
-	pci_iounmap(pdev, pio_base);
-	pci_iounmap(pdev, mdio_base);
 	pci_iounmap(pdev, br_base);
 	pci_release_regions(pdev);
+	mfd_remove_devices(&pdev->dev);
+	pci_free_irq_vectors(pdev);
+	kfree(pci_drv);
 	pci_disable_device(pdev);
 }
 
