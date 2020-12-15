@@ -43,7 +43,8 @@ struct edgx_com_ops {
 	int  (*hwts_get)(struct edgx_com *com, ptcom_t ptcom,
 			 struct ifreq *ifr);
 	void (*tx_timeout)(struct edgx_com *com, struct net_device *netdev);
-	bool (*multiqueue_support) (struct edgx_com *com, u8 *num_tx_queues, u8 *num_rx_queues);
+	bool (*multiqueue_support)(struct edgx_com *com, u8 *num_tx_queues,
+				    u8 *num_rx_queues);
 	irqreturn_t (*ts_tx_isr)(struct edgx_com *com);
 	irqreturn_t (*dma_tx_isr)(struct edgx_com *com);
 	irqreturn_t (*dma_rx_isr)(struct edgx_com *com);

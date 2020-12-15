@@ -274,8 +274,6 @@ static struct edgx_pt_ipo ipo_null = {0x0, 0x0, 0x0, 0x0,
 
 static inline void edgx_pt_ipo_set_mac(edgx_io_t *ipo_rbase, u8 *mac)
 {
-	u16 reg;
-
 	edgx_set16(ipo_rbase, _IPO_REG_ETH_0, 7, 0, mac[0]);
 	edgx_set16(ipo_rbase, _IPO_REG_ETH_0, 15, 8, mac[1]);
 	edgx_set16(ipo_rbase, _IPO_REG_ETH_1, 7, 0, mac[2]);
@@ -423,6 +421,7 @@ static ptid_t edgx_pt_ipo_get_mirror(struct edgx_pt *pt)
 	u16 reg;
 	ptid_t mgmt_ptid = edgx_com_get_mgmt_ptid(edgx_br_get_com(pt2br(pt)));
 	edgx_io_t *ipo_rbase = _IPO_BASE(pt->iobase);
+	u16 mirr_cfg;
 
 	edgx_wr16(ipo_rbase, _IPO_REG_CMD,
 		 (0 | _IPO_CMD_READ | _IPO_CMD_TRANSFER));
@@ -432,7 +431,7 @@ static ptid_t edgx_pt_ipo_get_mirror(struct edgx_pt *pt)
 		reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
 	} while (reg);
 
-	u16 mirr_cfg = edgx_rd16(ipo_rbase, _IPO_REG_MIRR);
+	mirr_cfg = edgx_rd16(ipo_rbase, _IPO_REG_MIRR);
 
 	mirr_cfg = mirr_cfg ^ BIT(mgmt_ptid);
 
@@ -731,7 +730,8 @@ static ssize_t prio_regen_tbl_read(struct file *filp, struct kobject *kobj,
 	get_tc_prio_params(idx, _TYPE_PRIO_REGEN, &reg_ofs, &bithi, &bitlo);
 	((u8 *)buf)[0] = edgx_get16(pt->iobase, reg_ofs, bithi, bitlo);
 	edgx_dbg("%s: PCP: %d, priority: %d, port: %s\n", __func__, (u8)idx,
-			edgx_get16(pt->iobase, reg_ofs, bithi, bitlo), edgx_pt_get_name(pt));
+		 edgx_get16(pt->iobase, reg_ofs, bithi, bitlo),
+		 edgx_pt_get_name(pt));
 
 	return count;
 }
@@ -754,8 +754,10 @@ static ssize_t traffic_class_tbl_read(struct file *filp, struct kobject *kobj,
 
 	get_tc_prio_params(idx, _TYPE_QUEUE_TBL, &reg_ofs, &bithi, &bitlo);
 	((u8 *)buf)[0] = edgx_get16(pt->iobase, reg_ofs, bithi, bitlo);
-	edgx_dbg("%s: priority: %d, traffic class: %d, port: %s\n", __func__, (u8)idx,
-			edgx_get16(pt->iobase, reg_ofs, bithi, bitlo), edgx_pt_get_name(pt));
+	edgx_dbg("%s: priority: %d, traffic class: %d, port: %s\n",
+		 __func__, (u8)idx,
+		 edgx_get16(pt->iobase, reg_ofs, bithi, bitlo),
+		 edgx_pt_get_name(pt));
 
 	return count;
 }
@@ -1413,7 +1415,7 @@ int edgx_tc_setup(struct net_device *netdev, enum tc_setup_type type,
 	u8 num_tc, num_rx_queues, num_tx_queues;
 	int i;
 
-	edgx_pt_warn(pt, "edgx_tc_setup type:%d\n", type);
+	edgx_pt_warn(pt, "%s type:%d\n", __func__, type);
 
 	if ((type != TC_SETUP_QDISC_MQPRIO) ||
 	    (!edgx_multiqueue_support_get(com, &num_tx_queues, &num_rx_queues)))
@@ -1422,7 +1424,7 @@ int edgx_tc_setup(struct net_device *netdev, enum tc_setup_type type,
 	mqprio->hw = TC_MQPRIO_HW_OFFLOAD_TCS;
 	num_tc = mqprio->num_tc;
 
-	edgx_pt_warn(pt, "edgx_tc_setup num_tc:%d\n", num_tc);
+	edgx_pt_warn(pt, "%s num_tc:%d\n", __func__, num_tc);
 
 	/* This is true on tc qdisc del */
 	if (!num_tc) {
@@ -1440,12 +1442,16 @@ int edgx_tc_setup(struct net_device *netdev, enum tc_setup_type type,
 	/* Do not change rx queues */
 	netdev_set_num_tc(netdev, num_tc);
 
-	// TODO: netdev_set_prio_tc_map and netdev_get_prio_tc_map for stats and q selection?
-	// netdev_set_prio_tc_map is done by the tc mqprio cmd so maybe do it at start
-
+	/* TODO: netdev_set_prio_tc_map and netdev_get_prio_tc_map for stats
+	 * and q selection?
+	 * netdev_set_prio_tc_map is done by the tc mqprio cmd so maybe
+	 * do it at start
+	 */
 	/* Each TC is associated with one netdev queue */
 	/* Set TC to queue mapping 1 to 1 */
-	// TODO if used offset and count from tc mqprio command just output a warning as we do not support it
+	/* TODO if used offset and count from tc mqprio command just output
+	 * a warning as we do not support it
+	 */
 	for (i = 0; i < num_tc; ++i)
 		netdev_set_tc_queue(netdev, i, 1, i);
 
@@ -2108,14 +2114,14 @@ int edgx_init_epport(struct edgx_br *br, struct edgx_pt **ppt)
 		pt->hcom = edgx_com_reg_pt(edgx_br_get_com(br), pt);
 		if (!pt->hcom) {
 			free_netdev(netdev);
-			return NULL;
+			goto err_port;
 		}
 		// TODO: netdev_set_prio_tc_map to default ones??
 		netif_set_real_num_tx_queues(netdev, num_tx_queues);
 		netif_set_real_num_rx_queues(netdev, num_rx_queues);
 		netdev_set_num_tc(netdev, num_tx_queues);
 		// TODO set q len properly with define EDGX_DMA_DESC_CNT
-		netdev->tx_queue_len = (256 - 1) * 8; // Max queues x Desc number
+		netdev->tx_queue_len = (256 - 1) * 8; //Max queues x Desc number
 	} else {
 		pt = _edgx_pt_init(br, ppt, PT_EP_ID);
 

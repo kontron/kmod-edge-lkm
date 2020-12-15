@@ -201,7 +201,7 @@ int edgx_sched_com_probe(struct edgx_br *br, struct edgx_br_irq *irq,
 	if (!br || !psc)
 		return -EINVAL;
 
-	if (!ifd_com)
+	if (!ifd_com || !ifd_com->ptmap)
 		return -ENODEV;
 
 	clk_frq = edgx_sched_get_hw_clk_frq(ifd_com->iobase);

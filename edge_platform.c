@@ -110,13 +110,16 @@ static int edgx_get_mem_res(struct platform_device *pdev, void **base)
 	*base = ioremap_nocache(mem->start, resource_size(mem));
 	if (!*base) {
 		dev_err(&pdev->dev,
-			"I/O remapping failed for dev '%s' 0x%x/0x%x\n",
-			dev_name(&pdev->dev), mem->start, resource_size(mem));
+			"I/O remapping failed for dev '%s' 0x%llx/0x%llx\n",
+			dev_name(&pdev->dev),
+			(long long unsigned int)mem->start,
+			(long long unsigned int)resource_size(mem));
 		return -ENODEV;
 	}
 
-	dev_info(&pdev->dev, "MEM-resource '%s' 0x%x/0x%x -> 0x%px\n",
-		 mem->name, mem->start, resource_size(mem), *base);
+	dev_info(&pdev->dev, "MEM-resource '%s' 0x%llx/0x%llx -> 0x%px\n",
+		 mem->name, (long long unsigned int)mem->start,
+		 (long long unsigned int)resource_size(mem), *base);
 	return 0;
 }
 

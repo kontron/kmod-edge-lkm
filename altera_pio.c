@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /** @file flx_frs_main.c
  * @brief Parallel I/O to general purpose I/O
  */

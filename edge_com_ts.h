@@ -39,7 +39,8 @@ struct edgx_com_pts {
 	u8			 ptid;
 	DECLARE_KFIFO(tx_queue, struct sk_buff*, EDGX_COM_TS_KFIFO_LEN);
 	u8			 tx_ts_pos;
-	spinlock_t		 lock;		/* Sync. access to tx_queue */
+	spinlock_t		 lock;	    /* Sync. access to tx_queue */
+	spinlock_t		*ts_lock;   /* Sync. access to shared IP reg. */
 };
 
 struct edgx_com_ts {
@@ -47,6 +48,7 @@ struct edgx_com_ts {
 	struct edgx_com_pts	*pts[EDGX_BR_MAX_PORTS];
 	struct workqueue_struct	*wq_tx;
 	struct work_struct	 work_tx;
+	spinlock_t		 ts_lock; /* Sync. access to shared IP reg. */
 };
 
 int edgx_com_ts_init(struct edgx_com_ts *ts, edgx_io_t *mngmnt_base,

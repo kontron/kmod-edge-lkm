@@ -40,15 +40,6 @@ enum edgx_stat_feat_id {
 	EDGX_STAT_FEAT_MAX,
 };
 
-static u8 edgx_stat_feat_offset[EDGX_STAT_FEAT_MAX - EDGX_STAT_FEAT_MIN] = {
-	0u,
-	44u,
-	28u,
-	36u,
-	48u,
-};
-
-
 struct edgx_statinfo {
 	enum edgx_stat_feat_id feat_id;
 	/* Rate should be about 1/2 the time the counters need to saturate */

@@ -382,19 +382,19 @@ static irqreturn_t edgx_br_single_isr(int irq, void *device)
 
 	if ((intmask & BIT(EDGX_IRQ_NR_TS_TX)) &&
 	    (intstat & BIT(EDGX_IRQ_NR_TS_TX)))
-			edgx_com_ts_tx_isr(irq, br->com);
+		edgx_com_ts_tx_isr(irq, br->com);
 
 	if ((intmask & BIT(EDGX_IRQ_NR_DMA_TX)) &&
 	    (intstat & BIT(EDGX_IRQ_NR_DMA_TX)))
-			edgx_com_dma_tx_isr(irq, br->com);
+		edgx_com_dma_tx_isr(irq, br->com);
 
 	if ((intmask & BIT(EDGX_IRQ_NR_DMA_RX)) &&
 	    (intstat & BIT(EDGX_IRQ_NR_DMA_RX)))
-			edgx_com_dma_rx_isr(irq, br->com);
+		edgx_com_dma_rx_isr(irq, br->com);
 
 	if ((intmask & BIT(EDGX_IRQ_NR_DMA_ERR)) &&
 	    (intstat & BIT(EDGX_IRQ_NR_DMA_ERR)))
-			edgx_com_dma_err_isr(irq, br->com);
+		edgx_com_dma_err_isr(irq, br->com);
 
 	return IRQ_HANDLED;
 }

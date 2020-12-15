@@ -256,7 +256,8 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			goto probe_out_link;
 		}
 
-		edgx_link_set_delays(lnk, 4432, 452, 122, 1133, 220, 207);
+		/* Min delays for Marvell 88E1510P - standard latency mode */
+		edgx_link_set_delays(lnk, 4032, 412, 109, 1083, 220, 203);
 	}
 
 	tsnic_vpd_asset_tag(pci_drv->vpd, asset, sizeof(asset));
