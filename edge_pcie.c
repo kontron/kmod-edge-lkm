@@ -47,7 +47,10 @@
 #define EDGX_PCI_PIO_BAR	2
 #define EDGX_PCI_PIO_OFFS	0xf0f00
 #define EDGX_PCI_PIO_SIZE	0x1f
-#define EDGX_PCI_I2C_BAR	5
+#define EDGX_PCI_MISC_BAR	5
+#define EDGX_PCI_AUX_OFFS	0x1000100
+#define EDGX_PCI_AUX_SIZE	0x10
+#define AUX_COMBINED_INT_EN	BIT(0)
 #define EDGX_PCI_I2C_OFFS	0x2000100
 #define EDGX_PCI_I2C_SIZE	0xff
 
@@ -57,6 +60,7 @@ struct edgx_pci_drv {
 	struct flx_pio_dev_priv *pio;
 	struct edgx_br_irq irq;
 	void *i2c_base;
+	void *aux_base;
 	struct vpd *vpd;
 };
 
@@ -68,6 +72,9 @@ static const struct pci_device_id edgx_pci_ids[] = {
 static int bridge_id;
 static int mdio_id;
 static int pio_id;
+
+static bool combined_irq;
+module_param(combined_irq, bool, 0);
 
 static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id);
 static void edgx_pci_remove(struct pci_dev *pdev);
@@ -82,20 +89,22 @@ static struct pci_driver edgx_pci_driver = {
 static int edgx_pci_get_irq(struct pci_dev *pdev, struct edgx_br_irq *irq)
 {
 	int ret, i;
+	int nr_vecs = (combined_irq) ? 1 : EDGX_IRQ_CNT;
 
-	ret = pci_alloc_irq_vectors(pdev, EDGX_IRQ_CNT, EDGX_IRQ_CNT,
+	ret = pci_alloc_irq_vectors(pdev, nr_vecs, nr_vecs,
 				    PCI_IRQ_MSI | PCI_IRQ_MSIX);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "pci_alloc_irq_vectors failed! ret=%d\n", ret);
 		return ret;
 	}
-	if (ret != EDGX_IRQ_CNT) {
+
+	if (ret != nr_vecs) {
 		dev_err(&pdev->dev, "Invalid IRQ count = %d!\n", ret);
 		pci_free_irq_vectors(pdev);
 		return -ENODEV;
 	}
 
-	irq->shared = false;
+	irq->shared = combined_irq;
 	irq->trig = EDGX_IRQ_EDGE_TRIG;
 
 	for (i = 0; i < ret; i++) {
@@ -123,6 +132,7 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct edgx_pt *pt;
 	struct edgx_link *lnk;
 	void *i2c_base;
+	void *aux_base;
 	char asset[TSNIC_SNO_LEN + 1];
 
 	ret = pci_enable_device(pdev);
@@ -186,12 +196,20 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		}
 	}
 
-	i2c_base = pci_iomap_range(pdev, EDGX_PCI_I2C_BAR, EDGX_PCI_I2C_OFFS,
+	i2c_base = pci_iomap_range(pdev, EDGX_PCI_MISC_BAR, EDGX_PCI_I2C_OFFS,
 				   EDGX_PCI_I2C_SIZE);
 	if (!i2c_base) {
 		dev_err(&pdev->dev, "Cannot map I2C device memory.\n");
 		ret = -ENOMEM;
 		goto probe_out_iomap_i2c;
+	}
+
+	aux_base = pci_iomap_range(pdev, EDGX_PCI_MISC_BAR, EDGX_PCI_AUX_OFFS,
+				   EDGX_PCI_AUX_SIZE);
+	if (!aux_base) {
+		dev_err(&pdev->dev, "Cannot map AUX device memory.\n");
+		ret = -ENOMEM;
+		goto probe_out_iomap_aux;
 	}
 
 	pci_drv = kzalloc(sizeof(*pci_drv), GFP_KERNEL);
@@ -200,12 +218,16 @@ static int edgx_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto probe_out_drv_alloc;
 	}
 	pci_drv->i2c_base = i2c_base;
+	pci_drv->aux_base = aux_base;
 
 	pci_drv->vpd = tsnic_vpd_init(i2c_base);
 	if (IS_ERR(pci_drv->vpd)) {
 		ret = PTR_ERR(pci_drv->vpd);
 		goto vpd_init_out;
 	}
+
+	if (combined_irq)
+		writel(AUX_COMBINED_INT_EN, aux_base);
 
 	ret = edgx_pci_get_irq(pdev, &pci_drv->irq);
 	if (ret)
@@ -283,6 +305,8 @@ probe_out_irq:
 	kfree(pci_drv);
 vpd_init_out:
 probe_out_drv_alloc:
+	pci_iounmap(pdev, aux_base);
+probe_out_iomap_aux:
 	pci_iounmap(pdev, i2c_base);
 probe_out_iomap_i2c:
 	if (0 && IS_ENABLED(CONFIG_GPIOLIB))
@@ -326,6 +350,7 @@ static void edgx_pci_remove(struct pci_dev *pdev)
 	pci_iounmap(pdev, mdio_base);
 	pci_iounmap(pdev, br_base);
 	pci_iounmap(pdev, pci_drv->i2c_base);
+	pci_iounmap(pdev, pci_drv->aux_base);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
 }
