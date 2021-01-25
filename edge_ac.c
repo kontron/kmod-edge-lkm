@@ -53,7 +53,7 @@ int edgx_probe_ac(edgx_io_t *iobase, struct device *dev)
 		_ifm[i].iobase = iobase + le32_to_cpu(itf->addr);
 		_ifm[i].len    = le32_to_cpu(itf->len);
 		_ifm[i].ptmap  = le32_to_cpu(itf->ptmap);
-		edgx_info("   %d: <0x%02X> @ 0x%08X/0x%06lX, v%u.%u - [0x%X]\n",
+		edgx_info("   %d: <0x%02X> @ 0x%08X/0x%06zx, v%u.%u - [0x%X]\n",
 			  i, _ifm[i].id, addr, _ifm[i].len,
 			  _ifm[i].ver.v_maj, _ifm[i].ver.v_min, _ifm[i].ptmap);
 	}

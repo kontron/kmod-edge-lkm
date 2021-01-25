@@ -222,7 +222,7 @@ static struct edgx_pt_ipo ipo_mgmt[] = {
 	 */
 };
 
-/* CFG0:   Cmp-len = 48bit (full MAC), keep priority
+/* CFG0:   Cmp-len (bits 7-2) = 48bit (full MAC), keep priority
  * FWD:    0 now, will be set to mgmt-port upon ipo_init()
  * MIRROR: 0 now, may become dedicated mirror-port
  * CFG1:   MSB-first compare, NO cut-through, NO IPO-mark
@@ -230,12 +230,12 @@ static struct edgx_pt_ipo ipo_mgmt[] = {
 static struct edgx_pt_ipo ipo_self = {0x40C1, 0x0, 0x0, 0xD000,
 				      {0x00, 0x00, 0x00, 0x00, 0x00, 0x00} };
 
-/* CFG0:   Cmp-len = 0 (match all), keep priority
+/* CFG0:   Cmp-len (bits 7-2) = 0 (match all), keep priority
  * FWD:    0xFFFF - allow on all ports
  * MIRROR: 0 now, may become dedicated mirror-port
  * CFG1:   MSB-first compare, NO cut-through, NO IPO-mark
  */
-static struct edgx_pt_ipo ipo_all =  {0x40C1, 0xFFFF, 0x0, 0xC000,
+static struct edgx_pt_ipo ipo_all =  {0x4001, 0xFFFF, 0x0, 0xC000,
 				      {0x00, 0x00, 0x00, 0x00, 0x00, 0x00} };
 
 /* Unused/Disabled IPO entry */
@@ -395,7 +395,7 @@ static void edgx_pt_ipo_init(struct edgx_pt *pt, ptid_t mgmt_ptid)
 	/* Clear out the rest using the none-rule */
 	for (entry = _IPO_NONE_ENT_START; entry < _IPO_NRULES; entry++) {
 		ipo_rbase = _IPO_BASE(pt->iobase);
-		/* Read values for _IPO_ALL_ENT rule */
+		/* Read values for entry */
 		edgx_wr16(ipo_rbase, _IPO_REG_CMD,
 			  (entry | _IPO_CMD_READ | _IPO_CMD_TRANSFER));
 		/* Sleep and then wait until flags are cleared by HW */
@@ -404,10 +404,9 @@ static void edgx_pt_ipo_init(struct edgx_pt *pt, ptid_t mgmt_ptid)
 			reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
 		} while (reg);
 		edgx_pt_ipo_init_single(ipo_rbase, &ipo_null, entry);
-		/* Write values for _IPO_NONE rules */
-		/* Read values for _IPO_ALL_ENT rule */
+		/* Write values for entry rule */
 		edgx_wr16(ipo_rbase, _IPO_REG_CMD,
-			  (entry | _IPO_CMD_READ | _IPO_CMD_TRANSFER));
+			  (entry | _IPO_CMD_WRITE | _IPO_CMD_TRANSFER));
 		/* Sleep and then wait until flags are cleared by HW */
 		usleep_range(300, 400);
 		do {
@@ -424,7 +423,7 @@ static ptid_t edgx_pt_ipo_get_mirror(struct edgx_pt *pt)
 	u16 mirr_cfg;
 
 	edgx_wr16(ipo_rbase, _IPO_REG_CMD,
-		 (0 | _IPO_CMD_READ | _IPO_CMD_TRANSFER));
+		 (_IPO_SELF_ENT | _IPO_CMD_READ | _IPO_CMD_TRANSFER));
 	/* Sleep and then wait until flags are cleared by HW */
 	usleep_range(300, 400);
 	do {
@@ -442,19 +441,20 @@ static int edgx_pt_ipo_set_mirror(struct edgx_pt *pt, ptid_t mirr_ptid)
 {
 	unsigned int i;
 	ptid_t mgmt_ptid = edgx_com_get_mgmt_ptid(edgx_br_get_com(pt2br(pt)));
-	u16 mirr_cfg = BIT(mgmt_ptid) | ((mirr_ptid < 0) ? 0 : BIT(mirr_ptid));
+	ptid_t mirr_ptid_int = mirr_ptid - 1; // internal port id is one less than external port id
+	u16 mirr_cfg = BIT(mgmt_ptid) | ((mirr_ptid_int < 0) ? 0 : BIT(mirr_ptid_int));
 	u16 reg;
 
-	if (mirr_ptid == edgx_pt_get_id(pt) || mirr_ptid == mgmt_ptid) {
+	if (mirr_ptid_int == edgx_pt_get_id(pt) || mirr_ptid_int == mgmt_ptid) {
 		edgx_pt_err(pt, "Cannot mirror management port or to self.\n");
 		return -EINVAL;
 	}
 
-	for (i = 0; i < _IPO_NRULES; i++) {
+	for (i = _IPO_SELF_ENT; i < _IPO_NRULES; i++) {
 		edgx_io_t *ipo_rbase = _IPO_BASE(pt->iobase);
 
 		edgx_wr16(ipo_rbase, _IPO_REG_CMD,
-			  (i | _IPO_CMD_WRITE | _IPO_CMD_TRANSFER));
+			  (i | _IPO_CMD_READ | _IPO_CMD_TRANSFER));
 		/* Sleep and then wait until flags are cleared by HW */
 		usleep_range(300, 400);
 		do {
@@ -1489,27 +1489,6 @@ static u16 edgx_select_ep_queue(struct net_device *netdev, struct sk_buff *skb,
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
-static u16 edgx_select_brport_queue(struct net_device *netdev, struct sk_buff *skb,
-			      struct net_device *sb_dev)
-#else
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
-static u16 edgx_select_brport_queue(struct net_device *netdev, struct sk_buff *skb,
-			      struct net_device *sb_dev, select_queue_fallback_t fallback)
-#else
-static u16 edgx_select_brport_queue(struct net_device *netdev, struct sk_buff *skb,
-			      void *sb_dev, select_queue_fallback_t fallback)
-#endif
-#endif
-{
-	struct edgx_pt *pt = net2pt(netdev);
-
-	edgx_dbg("edgx_select_brport_q port:%s\n", edgx_pt_get_name(pt));
-
-	return edgx_get_tc_mgmtraffic(pt->parent);
-}
-
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 static int edgx_pt_get_pt_parent_id(struct net_device *dev,
 				    struct netdev_phys_item_id *ppid)
 {
@@ -1546,7 +1525,6 @@ static const struct net_device_ops edgx_brpt_netdev_ops = {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 	.ndo_get_port_parent_id	= edgx_pt_get_pt_parent_id,
 #endif
-	.ndo_select_queue       = edgx_select_brport_queue,
 };
 
 static const struct net_device_ops edgx_eppt_netdev_ops = {
