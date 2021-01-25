@@ -93,9 +93,10 @@ static int edgx_pci_get_irq(struct pci_dev *pdev, struct edgx_br_irq *irq)
 
 	ret = pci_alloc_irq_vectors(pdev, EDGX_IRQ_CNT, EDGX_IRQ_CNT,
 				    PCI_IRQ_MSI | PCI_IRQ_MSIX);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(&pdev->dev, "pci_alloc_irq_vectors failed! ret=%d\n", ret);
 		return ret;
-
+	}
 	if (ret != EDGX_IRQ_CNT) {
 		dev_err(&pdev->dev, "Invalid IRQ count = %d!\n", ret);
 		pci_free_irq_vectors(pdev);
