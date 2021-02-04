@@ -2750,7 +2750,7 @@ static struct attribute_group frer_pt_group = {
 EDGX_DEV_ATTR_RO(get_numofports, "tsnFrerNumPorts");
 /* Sequence Encode-Decode */
 EDGX_BIN_ATTR_RO(seqenc_str2port, "tsnFrerSeqEncStr2Port",
-		 EDGX_BR_MAX_PORTS * sizeof(u16));
+		 FRER_MAX_NO_STREAMS * sizeof(u16));
 /* Sequence Generation */
 EDGX_DEV_ATTR_WO(seqgen_create, "tsnFrerSeqGenCreate");
 EDGX_DEV_ATTR_WO(seqgen_del_fn, "tsnFrerSeqGenDelFn");

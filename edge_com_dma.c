@@ -491,7 +491,7 @@ static int edgx_dma_process_tx(struct edgx_com_dma *dma, int budget)
 
 			if (skb) {
 				/* TODO: Add DMA error counters? */
-				dev_kfree_skb_any(skb);
+				dev_consume_skb_any(skb);
 				++i;
 			}
 		} while (skb && (i < budget));
