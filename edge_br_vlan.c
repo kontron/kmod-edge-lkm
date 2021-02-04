@@ -318,7 +318,7 @@ static inline void _edgx_br_move_vid2fid(struct edgx_br_vlan *brvlan,
 		reg = edgx_get16(brvlan->iobase,
 				 EDGX_BR_VLAN_CMD_BASE, 13, 15);
 	} while (reg);
-	mutex_unlock(&brvlan->reg_lock);
+
 	/* Set the new fid to previously adquired VLAN_FID register */
 	edgx_set16(brvlan->iobase, EDGX_BR_VLAN_FID_BASE, 5, 0, fid->fid);
 	edgx_wr16(brvlan->iobase, EDGX_BR_VLAN_CMD_BASE,

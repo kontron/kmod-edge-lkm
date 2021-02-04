@@ -182,13 +182,16 @@ static void edgx_com_ts_find_tx(struct edgx_com_pts *pts,
 	int ts_ret;
 	const u8 *hdr, *ts_hdr_u8, hdr_position[4] = {0, 4, 30, 31};
 	struct skb_shared_hwtstamps hwts;
-	struct sk_buff *found_skb = NULL;
+	struct sk_buff *found_skb;
 	u16 ts_hdr[EDGX_COM_TS_HDR_LEN] = {0};
+	u16 ts_ctrl;
 
+	edgx_dbg("COM TS: find_tx.\n");
 	/* First read the register for the TX timestamp status */
-	u16 ts_ctrl = edgx_rd16(pts->iobase, EDGX_COM_TS_TX_STATUS);
+	ts_ctrl = edgx_rd16(pts->iobase, EDGX_COM_TS_TX_STATUS);
 	/* If the port bit is set there is a timestamp ready to be used */
 	while (ts_ctrl & BIT(pts->ptid)) {
+		found_skb = NULL;
 		ts_ret = edgx_com_ts_read_tx(pts, cur_time,
 					     &hwts.hwtstamp,
 					     ts_hdr, EDGX_COM_TS_HDR_LEN);
@@ -214,18 +217,16 @@ static void edgx_com_ts_find_tx(struct edgx_com_pts *pts,
 		if (found_skb) {
 			/* Matching frame found, but timestamp is invalid. */
 			if (ts_ret) {
-				edgx_err("%s: Cannot calculate port%u timestamp!\n",
+				edgx_warn("%s: Cannot calculate port%u timestamp.\n",
 					 __func__, pts->ptid);
 				dev_kfree_skb_any(found_skb);
 			} else {
-				skb_shinfo(found_skb)->tx_flags |=
-					   SKBTX_HW_TSTAMP | SKBTX_IN_PROGRESS;
 				edgx_dbg("%s: ts=%llu, pos=%u\n",
 					 __func__, hwts.hwtstamp, i);
 				edgx_com_txts_dispatch(found_skb, &hwts);
 			}
 		} else
-			edgx_err("%s(): Could not find skb!\n", __func__);
+			edgx_warn("%s(): TX timestamp lost.\n", __func__);
 		/* Read TX timestamp status for next loop */
 		ts_ctrl = edgx_rd16(pts->iobase, EDGX_COM_TS_TX_STATUS);
 	}
@@ -241,6 +242,7 @@ static void edgx_com_ts_find_rx(struct edgx_com_pts *pts, const u16 *hdr,
 	ktime_t tmp_time;
 	u16 ts_ctrl;
 
+	edgx_dbg("COM TS: find_rx.\n");
 	hdr_u8 = (u8 *)hdr;
 	/* First read the register for the RX timestamp status */
 	ts_ctrl = edgx_rd16(pts->iobase, EDGX_COM_TS_RX_STATUS);
@@ -361,19 +363,14 @@ struct sk_buff *edgx_com_ts_xmit(struct edgx_com_ts *ts,
 		return skb;
 	}
 
-	if (!kfifo_is_full(&pts->tx_queue)) {
-		kfifo_in_spinlocked(&pts->tx_queue, &skb, 1, &pts->lock);
-		// TODO: increment lost timestamp stat if queue is full
-	} else {
+	if (!kfifo_in_spinlocked(&pts->tx_queue, &skb, 1, &pts->lock)) {
 		dev_kfree_skb_any(skb_backup);
-		edgx_err("%s(): kfifo is full!\n", __func__);
+		edgx_warn("%s(): Tx timestamp dropped.\n", __func__);
 		return skb;
 	}
 
 	skb_shinfo(skb)->tx_flags |= SKBTX_IN_PROGRESS;
 	skb_tx_timestamp(skb);
-	skb_shinfo(skb)->tx_flags &= ~SKBTX_HW_TSTAMP;
-	skb_shinfo(skb)->tx_flags &= ~SKBTX_IN_PROGRESS;
 	edgx_dbg("%s: queued. pos=%d\n", __func__, kfifo_len(&pts->tx_queue));
 	return skb_backup;
 }
@@ -386,6 +383,7 @@ static void edgx_com_ts_work_tx(struct work_struct *work)
 	struct edgx_com_pts *pts;
 	struct edgx_com_ts *ts = edgx_work_to_ts(work);
 
+	edgx_dbg("COM TS: work_tx.\n");
 	edgx_br_clr_int_stat(ts->parent, BIT(EDGX_IRQ_NR_TS_TX));
 
 	for (ptid = 0; ptid < EDGX_BR_MAX_PORTS; ptid++) {
