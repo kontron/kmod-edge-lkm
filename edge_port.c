@@ -1471,21 +1471,30 @@ static u16 edgx_select_ep_queue(struct net_device *netdev, struct sk_buff *skb,
 #endif
 #endif
 {
+	u16 ret = 0;
+	int num_tc = netdev_get_num_tc(netdev);
 	edgx_dbg("edgx_select_ep_q\n");
 
 	/* Highest TC queue to highest HW queue -> 0 */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
-	return (netdev_get_num_tc(netdev) - 1) -
-		(netdev_pick_tx(netdev, skb, NULL) % netdev->real_num_tx_queues);
+	if (num_tc)
+		/* Highest TC queue to highest HW queue -> 0 */
+		ret = ((u16) num_tc - 1) - (netdev_pick_tx(netdev, skb, NULL) %
+		      (u16) netdev->real_num_tx_queues);
 #else
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
-	return (netdev_get_num_tc(netdev) - 1) -
-		fallback(netdev, skb, NULL) % netdev->real_num_tx_queues;
+	if (num_tc)
+		/* Highest TC queue to highest HW queue -> 0 */
+		ret = ((u16) num_tc - 1) - (fallback(netdev, skb, NULL) %
+		      (u16) netdev->real_num_tx_queues);
 #else
-	return (netdev_get_num_tc(netdev) - 1) -
-		fallback(netdev, skb) % netdev->real_num_tx_queues;
+	if (num_tc)
+		/* Highest TC queue to highest HW queue -> 0 */
+		ret = ((u16) num_tc - 1) - (fallback(netdev, skb) %
+		      (u16) netdev->real_num_tx_queues);
 #endif
 #endif
+	return ret;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
@@ -2097,7 +2106,6 @@ int edgx_init_epport(struct edgx_br *br, struct edgx_pt **ppt)
 		// TODO: netdev_set_prio_tc_map to default ones??
 		netif_set_real_num_tx_queues(netdev, num_tx_queues);
 		netif_set_real_num_rx_queues(netdev, num_rx_queues);
-		netdev_set_num_tc(netdev, num_tx_queues);
 		// TODO set q len properly with define EDGX_DMA_DESC_CNT
 		netdev->tx_queue_len = (256 - 1) * 8; //Max queues x Desc number
 	} else {
