@@ -43,6 +43,7 @@
 #define _ADPT_RMII_ID   0xB5
 #define _ADPT_DUAL_ID   0xB8
 #define _ADPT_TRIPLE_ID 0xB9
+#define _ADPT_NONE_ID	0xBC
 
 #define _ADPT_REG_ID    0x0
 #define _ADPT_REG_RXDLY 0x20
@@ -106,7 +107,7 @@ struct _adpt_desc {
 	phy_interface_t itf;
 
 	/* returns the capabilities of current mode */
-	int (*adjust)(struct edgx_link *);
+	int (*adjust)(struct edgx_link *link);
 
 } _adpt_desc[] = {
 	{ .id = _ADPT_GMII_ID,   .itf = PHY_INTERFACE_MODE_GMII, },
@@ -887,7 +888,8 @@ int edgx_link_init(struct edgx_pt *pt, struct edgx_link **lnk)
 			goto end_adpt;
 		}
 
-	edgx_pt_err(pt, "   Unknown Adapter ID 0x%X\n", reg);
+	if (reg != _ADPT_NONE_ID)
+		edgx_pt_err(pt, "   Unknown Adapter ID 0x%X\n", reg);
 
 end_adpt:
 	edgx_pt_add_sysfs(pt, &phy_group);

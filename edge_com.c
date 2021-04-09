@@ -49,7 +49,8 @@ void edgx_com_txts_dispatch(struct sk_buff *skb,
 	ktime_t dly = edgx_link_get_tx_delay(lnk);
 
 	hwts->hwtstamp = ktime_add(hwts->hwtstamp, dly);
-	skb_complete_tx_timestamp(skb, hwts);
+	skb_tstamp_tx(skb, hwts);
+	dev_consume_skb_any(skb);
 }
 
 /* TODO: This function should take one 16-bit trailer and split it up itself.

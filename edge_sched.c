@@ -201,7 +201,7 @@ int edgx_sched_com_probe(struct edgx_br *br, struct edgx_br_irq *irq,
 	if (!br || !psc)
 		return -EINVAL;
 
-	if (!ifd_com)
+	if (!ifd_com || !ifd_com->ptmap)
 		return -ENODEV;
 
 	*psc = kzalloc(sizeof(**psc), GFP_KERNEL);
@@ -1245,6 +1245,9 @@ static ssize_t oper_ctrl_list_len_show(struct device *dev,
 	if (op_tab_idx >= 0) {
 		row_cnt = sched->op_tabs[op_tab_idx].list_len;
 		ret = scnprintf(buf, PAGE_SIZE, "%u\n", row_cnt);
+	} else {
+		// no schedule in operation! return 0 as list length
+		ret = scnprintf(buf, PAGE_SIZE, "%u\n", 0);
 	}
 	mutex_unlock(&sched->lock);
 

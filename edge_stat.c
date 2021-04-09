@@ -43,6 +43,14 @@ struct edgx_stat {
 	struct _edgx_ptstat   ptstat[EDGX_BR_MAX_PORTS];
 };
 
+static u8 edgx_stat_feat_offset[EDGX_STAT_FEAT_MAX - EDGX_STAT_FEAT_MIN] = {
+	0u,
+	44u,
+	28u,
+	36u,
+	48u,
+};
+
 /* Mask for selector bits in counter control register (bits 8-12).*/
 #define _STAT_SEL_MASK  0x1F00
 #define _STAT_CMD_REG	0x2

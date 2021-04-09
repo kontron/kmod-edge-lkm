@@ -34,7 +34,7 @@
 #define EDGX_GIT "[" __stringify(_EDGX_GIT) "]"
 
 #ifndef EDGX_SW_CORE_VERSION
-	#define EDGX_SW_CORE_VERSION "0.9"
+	#define EDGX_SW_CORE_VERSION ""
 #endif
 
 #define EDGX_SW_CORE_NAME    "edgx-sw"

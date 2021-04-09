@@ -140,13 +140,12 @@ static inline int edgx_sid_del_entry(struct edgx_br *br, struct edgx_sid *sid)
 	return 0;
 }
 
-u32 edgx_sid_get_cnt(struct edgx_sid_br *sid, u16 str_hdl, u8 port,
-		     enum cnt_type type)
+static u32 _edgx_sid_get_cnt(struct edgx_sid_br *sid, u16 str_hdl, u8 port,
+			     enum cnt_type type)
 {
 	u16 capture = port | (str_hdl << 4);
 	u32 val = 0;
 
-	mutex_lock(&sid->lock);
 	edgx_wr16(sid->base_addr, SID_CNT_CAPT2, capture);
 
 	do {
@@ -161,9 +160,20 @@ u32 edgx_sid_get_cnt(struct edgx_sid_br *sid, u16 str_hdl, u8 port,
 		val = (edgx_rd16(sid->base_addr, SID_CNT_FRAMES_OUT_L) |
 		      (((u32)edgx_rd16(sid->base_addr,
 				       SID_CNT_FRAMES_OUT_H)) << 16));
-	mutex_unlock(&sid->lock);
 
 	return val;
+}
+
+u32 edgx_sid_get_cnt(struct edgx_sid_br *sid, u16 str_hdl, u8 port,
+		     enum cnt_type type)
+{
+	u32 ret;
+
+	mutex_lock(&sid->lock);
+	ret = _edgx_sid_get_cnt(sid, str_hdl, port, type);
+	mutex_unlock(&sid->lock);
+
+	return ret;
 }
 
 static int edgx_sid_rbt_insert(struct edgx_sid *newsid, struct edgx_br *br)
@@ -465,12 +475,15 @@ static ssize_t cps_in_read(struct file *filp, struct kobject *kobj,
 	if (edgx_sysfs_tbl_params(ofs, count, sizeof(u32), &idx) ||
 	    idx > (sid->max_streams - 1))
 		return -EINVAL;
-	/*Mutex handled in function since it is used in frer as well*/
+
+	mutex_lock(&sid->lock);
 	if (edgx_sid_rbt_search(&sid->sid_root, idx))
-		((u32 *)buf)[0] = edgx_sid_get_cnt(sid, idx, edgx_pt_get_id(pt),
-						   CNT_IN);
+		((u32 *)buf)[0] = _edgx_sid_get_cnt(sid, idx,
+						    edgx_pt_get_id(pt),
+						    CNT_IN);
 	else
 		ret = -ENOENT;
+	mutex_unlock(&sid->lock);
 
 	return ret ? ret : count;
 }
@@ -488,12 +501,14 @@ static ssize_t cps_out_read(struct file *filp, struct kobject *kobj,
 	    idx > sid->max_streams)
 		return -EINVAL;
 
-	/*Mutex handled in function since it is used in frer as well*/
+	mutex_lock(&sid->lock);
 	if (edgx_sid_rbt_search(&sid->sid_root, idx))
-		((u32 *)buf)[0] = edgx_sid_get_cnt(sid, idx, edgx_pt_get_id(pt),
-						   CNT_OUT);
+		((u32 *)buf)[0] = _edgx_sid_get_cnt(sid, idx,
+						    edgx_pt_get_id(pt),
+						    CNT_OUT);
 	else
 		ret =  -ENOENT;
+	mutex_unlock(&sid->lock);
 
 	return ret ? ret : count;
 }
@@ -620,6 +635,8 @@ static ssize_t list_port_pos_read(struct file *filp, struct kobject *kobj,
 	if (edgx_sysfs_tbl_params(ofs, count, sizeof(struct port_list),
 				  &idx) || idx > (sid_br->max_streams - 1))
 		return -EINVAL;
+
+	mutex_lock(&sid_br->lock);
 	sid = edgx_sid_rbt_search(&sid_br->sid_root, idx);
 	if (sid) {
 		tmp->in_fac_in = 0;
@@ -627,9 +644,11 @@ static ssize_t list_port_pos_read(struct file *filp, struct kobject *kobj,
 		tmp->out_fac_in = sid->port_mask;
 		tmp->out_fac_out = 0;
 	} else {
+		mutex_unlock(&sid_br->lock);
 		edgx_br_err(br, "PortList:Stream handle doesn't exist\n");
 		return -ENOENT;
 	}
+	mutex_unlock(&sid_br->lock);
 
 	return count;
 }
@@ -650,8 +669,10 @@ static ssize_t sid_ident_params_read(struct file *filp, struct kobject *kobj,
 				  &idx) || idx > (sid_br->max_streams - 1))
 		return -EINVAL;
 
+	mutex_lock(&sid_br->lock);
 	sid = edgx_sid_rbt_search(&sid_br->sid_root, idx);
 	if (!sid) {
+		mutex_unlock(&sid_br->lock);
 		edgx_br_err(br, "Stream handle doesn't exist\n");
 		return -ENOENT;
 	}
@@ -665,6 +686,7 @@ static ssize_t sid_ident_params_read(struct file *filp, struct kobject *kobj,
 		tmp->id_type = SID_UNKNOWN;
 		tmp->str_hdl = sid->str_hdl;
 	}
+	mutex_unlock(&sid_br->lock);
 
 	return count;
 }
