@@ -51,7 +51,7 @@
 #define _SEQ_REC_CMD   0x0300
 #define _SEQ_REC_TBL   0x0318
 #define _SEQ_GEN_CMD 0x0380  /* Reset sequence number */
-#define _STRTBL_MASK 0x7FF /*First eleven bits - used as pointer to row of tbl*/
+#define _STRTBL_MASK 0xFFF /* bits 11-0 - used as pointer to row of tbl*/
 
 #define _SEQREC_MAX_HISTL	0xF
 #define _SEQREC_MIN_HISTL	0x2
@@ -301,7 +301,7 @@ static u16 edgx_frer_ip_rd_strtbl(struct edgx_frer *f, u16 strhdl, int tbl_num)
 		return edgx_rd16(f->iobase, STREAM_TABLE3);
 	}
 
-	return -EINVAL;
+	return 0;
 }
 
 static void edgx_frer_ip_wr_strtbl(struct edgx_frer *f, u16 strhdl, u16 val,
@@ -381,7 +381,7 @@ static int edgx_frer_check_fnidx(u16 fnidx, struct edgx_frer *f)
 
 static int edgx_frer_check_strhdl(u16 strhdl, struct edgx_frer *f)
 {
-	if (strhdl > f->streams_max) {
+	if (strhdl > f->streams_max - 1) {
 		edgx_br_err(f->parent, "Stream handle out of boundaries\n");
 		return -EINVAL;
 	}
@@ -489,8 +489,6 @@ static int _seqgen_list_del_entry(struct edgx_frer *f,  u16 str)
 		return -EINVAL;
 
 	fn = edgx_frer_ip_rd_strtbl(f, str, FRER_TBL2) & _STRTBL_MASK;
-	if (fn == -EINVAL)
-		return fn;
 
 	n = _seqgen_rbt_search(&f->sg_root, fn);
 
@@ -727,8 +725,8 @@ int _seqenc_check_type(u8 type, struct edgx_frer *f)
 
 int _seqenc_check_active(u16 active, struct edgx_frer *f)
 {
-	if (active > ENC_UNDEFINED) {
-		edgx_br_err(f->parent, "SeqEnc: Port number invalid\n");
+	if ((active != ENC_ACTIVE) && (active != ENC_PASSIVE)){
+		edgx_br_err(f->parent, "SeqEnc: invalid activation value\n");
 		return -EINVAL;
 	} else {
 		return 0;
@@ -1836,6 +1834,26 @@ static ssize_t seqenc_create_store(struct device *dev,
 	return ret ? ret : count;
 }
 
+static ssize_t seqenc_create_show(struct device *dev,
+		  struct device_attribute *attr,
+		  char *buf)
+{
+	struct edgx_pt *pt = edgx_dev2pt(dev);
+	struct edgx_frer *f = edgx_br_get_frer(edgx_pt_get_br(pt));
+	int ret;
+
+	/* direction is not stored in data, as only DIR_OUT_FAC is possible, but it has to be checked
+	 * if a seqenc entry was created for the port. For the check the active attribute is used.
+	 * If active attribute equal ENC_UNDEFINED, no seqenc entry exists */
+	mutex_lock(&f->lock);
+	if (f->se_ports[edgx_pt_get_id(pt)].active == ENC_UNDEFINED)
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", DIR_UNKNOWN);
+	else
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", DIR_OUT_FAC);
+	mutex_unlock(&f->lock);
+	return ret;
+}
+
 static ssize_t seqenc_active_store(struct device *dev,
 				   struct device_attribute *attr,
 				   const char *buf, size_t count)
@@ -2697,7 +2715,7 @@ static ssize_t cnt_sr_resets_read(struct file *filp, struct kobject *kobj,
 
 /****************************** Sysfs Port group ******************************/
 /*Sequence Encode-Decode sysfs group*/
-EDGX_DEV_ATTR_WO(seqenc_create, "tsnFrerSeqEncCreate");
+EDGX_DEV_ATTR_RW(seqenc_create, "tsnFrerSeqEncCreate");
 EDGX_DEV_ATTR_RW(seqenc_active, "tsnFrerSeqEncActive");
 EDGX_DEV_ATTR_WO(seqenc_delstr, "tsnFrerSeqEncDelStr");
 EDGX_DEV_ATTR_WO(seqenc_delportfn, "tsnFrerSeqEncDelPortFn");

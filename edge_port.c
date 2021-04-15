@@ -67,6 +67,7 @@ struct edgx_pt {
 	struct edgx_sched       *sched;
 	struct edgx_preempt     *preempt;
 	struct edgx_fqtss	*fqtss;
+	struct mutex 		reg_lock; /* Protects register access */
 };
 
 #define _PT_STP_FWD       0x0
@@ -309,6 +310,8 @@ static void edgx_pt_ipo_init(struct edgx_pt *pt, ptid_t mgmt_ptid)
 	u16 reg;
 	u16 mtc = edgx_get_tc_mgmtraffic(pt->parent);
 
+	mutex_lock(&pt->reg_lock);
+
 	for (entry = 0; entry < ARRAY_SIZE(ipo_mgmt); entry++) {
 		ipo_rbase = _IPO_BASE(pt->iobase);
 		edgx_pt_ipo_init_single(ipo_rbase, &ipo_mgmt[entry], entry);
@@ -413,6 +416,8 @@ static void edgx_pt_ipo_init(struct edgx_pt *pt, ptid_t mgmt_ptid)
 			reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
 		} while (reg);
 	}
+
+	mutex_unlock(&pt->reg_lock);
 }
 
 static ptid_t edgx_pt_ipo_get_mirror(struct edgx_pt *pt)
@@ -421,6 +426,8 @@ static ptid_t edgx_pt_ipo_get_mirror(struct edgx_pt *pt)
 	ptid_t mgmt_ptid = edgx_com_get_mgmt_ptid(edgx_br_get_com(pt2br(pt)));
 	edgx_io_t *ipo_rbase = _IPO_BASE(pt->iobase);
 	u16 mirr_cfg;
+
+	mutex_lock(&pt->reg_lock);
 
 	edgx_wr16(ipo_rbase, _IPO_REG_CMD,
 		 (_IPO_SELF_ENT | _IPO_CMD_READ | _IPO_CMD_TRANSFER));
@@ -431,6 +438,8 @@ static ptid_t edgx_pt_ipo_get_mirror(struct edgx_pt *pt)
 	} while (reg);
 
 	mirr_cfg = edgx_rd16(ipo_rbase, _IPO_REG_MIRR);
+
+	mutex_unlock(&pt->reg_lock);
 
 	mirr_cfg = mirr_cfg ^ BIT(mgmt_ptid);
 
@@ -453,6 +462,8 @@ static int edgx_pt_ipo_set_mirror(struct edgx_pt *pt, ptid_t mirr_ptid)
 	for (i = _IPO_SELF_ENT; i < _IPO_NRULES; i++) {
 		edgx_io_t *ipo_rbase = _IPO_BASE(pt->iobase);
 
+		mutex_lock(&pt->reg_lock);
+
 		edgx_wr16(ipo_rbase, _IPO_REG_CMD,
 			  (i | _IPO_CMD_READ | _IPO_CMD_TRANSFER));
 		/* Sleep and then wait until flags are cleared by HW */
@@ -468,6 +479,8 @@ static int edgx_pt_ipo_set_mirror(struct edgx_pt *pt, ptid_t mirr_ptid)
 		do {
 			reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
 		} while (reg);
+
+		mutex_unlock(&pt->reg_lock);
 	}
 	return 0;
 }
@@ -1072,6 +1085,11 @@ static int edgx_brpt_set_mac_addr(struct net_device *netdev, void *p)
 	struct sockaddr *addr = p;
 	edgx_io_t *ipo_rbase = _IPO_BASE(pt->iobase);
 
+	if (!is_valid_ether_addr(addr->sa_data))
+		return -EADDRNOTAVAIL;
+
+	mutex_lock(&pt->reg_lock);
+
 	edgx_wr16(ipo_rbase, _IPO_REG_CMD,
 		  (_IPO_SELF_ENT |
 		   _IPO_CMD_READ |
@@ -1081,9 +1099,6 @@ static int edgx_brpt_set_mac_addr(struct net_device *netdev, void *p)
 	do {
 		reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
 	} while (reg);
-
-	if (!is_valid_ether_addr(addr->sa_data))
-		return -EADDRNOTAVAIL;
 
 	edgx_pt_ipo_set_mac(ipo_rbase, addr->sa_data);
 	edgx_wr16(ipo_rbase, _IPO_REG_CMD,
@@ -1095,6 +1110,9 @@ static int edgx_brpt_set_mac_addr(struct net_device *netdev, void *p)
 	do {
 		reg = edgx_get16(ipo_rbase, _IPO_REG_CMD, 15, 15);
 	} while (reg);
+
+	mutex_unlock(&pt->reg_lock);
+
 	memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
 
 	return 0;
@@ -1421,6 +1439,7 @@ int edgx_tc_setup(struct net_device *netdev, enum tc_setup_type type,
 	    (!edgx_multiqueue_support_get(com, &num_tx_queues, &num_rx_queues)))
 		return -EOPNOTSUPP;
 
+	/* TODO: Support also the case when HW offload is not set */
 	mqprio->hw = TC_MQPRIO_HW_OFFLOAD_TCS;
 	num_tc = mqprio->num_tc;
 
@@ -1448,12 +1467,18 @@ int edgx_tc_setup(struct net_device *netdev, enum tc_setup_type type,
 	 * do it at start
 	 */
 	/* Each TC is associated with one netdev queue */
-	/* Set TC to queue mapping 1 to 1 */
+	/* Set TC to queue mapping 1 to 1 in reverse */
 	/* TODO if used offset and count from tc mqprio command just output
 	 * a warning as we do not support it
 	 */
-	for (i = 0; i < num_tc; ++i)
-		netdev_set_tc_queue(netdev, i, 1, i);
+	for (i = num_tc - 1; i >= 0; --i)
+		netdev_set_tc_queue(netdev, i, 1, num_tc - i - 1);
+
+	/* All TCs from num_tc up to num_tx_queues are mapped to the
+	highest-numbered HW queue among the currently used, i.e. HW q (num_tc -1).
+	*/
+	for (i = num_tc; i < num_tx_queues ; ++i)
+		netdev_set_tc_queue(netdev, i, 1 ,  num_tc - 1);
 
 	return 0;
 }
@@ -1461,38 +1486,30 @@ int edgx_tc_setup(struct net_device *netdev, enum tc_setup_type type,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 static u16 edgx_select_ep_queue(struct net_device *netdev, struct sk_buff *skb,
 			  struct net_device *sb_dev)
-#else
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
 static u16 edgx_select_ep_queue(struct net_device *netdev, struct sk_buff *skb,
 			  struct net_device *sb_dev, select_queue_fallback_t fallback)
 #else
 static u16 edgx_select_ep_queue(struct net_device *netdev, struct sk_buff *skb,
 			  void *sb_dev, select_queue_fallback_t fallback)
 #endif
-#endif
 {
 	u16 ret = 0;
 	int num_tc = netdev_get_num_tc(netdev);
 	edgx_dbg("edgx_select_ep_q\n");
 
-	/* Highest TC queue to highest HW queue -> 0 */
+	if (num_tc)
+		/* Highest TC queue to highest HW queue -> 0 */
+		/* Already set by netdev_set_tc_queue */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
-	if (num_tc)
-		/* Highest TC queue to highest HW queue -> 0 */
-		ret = ((u16) num_tc - 1) - (netdev_pick_tx(netdev, skb, NULL) %
+		ret = (netdev_pick_tx(netdev, skb, NULL) %
+		      (u16) netdev->real_num_tx_queues);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
+		ret = (fallback(netdev, skb, NULL) %
 		      (u16) netdev->real_num_tx_queues);
 #else
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
-	if (num_tc)
-		/* Highest TC queue to highest HW queue -> 0 */
-		ret = ((u16) num_tc - 1) - (fallback(netdev, skb, NULL) %
+		ret = (fallback(netdev, skb) %
 		      (u16) netdev->real_num_tx_queues);
-#else
-	if (num_tc)
-		/* Highest TC queue to highest HW queue -> 0 */
-		ret = ((u16) num_tc - 1) - (fallback(netdev, skb) %
-		      (u16) netdev->real_num_tx_queues);
-#endif
 #endif
 	return ret;
 }
@@ -2005,6 +2022,7 @@ static struct edgx_pt *_edgx_pt_init(struct edgx_br  *br,
 	pt->ptid    = ptid;
 	pt->parent = br;
 	pt->netdev = netdev;
+	mutex_init(&pt->reg_lock);
 
 	t = ether_addr_to_u64(edgx_br_get_mac(br));
 	/* EP is -1.. so add one here */

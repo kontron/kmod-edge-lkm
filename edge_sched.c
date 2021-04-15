@@ -204,10 +204,6 @@ int edgx_sched_com_probe(struct edgx_br *br, struct edgx_br_irq *irq,
 	if (!ifd_com || !ifd_com->ptmap)
 		return -ENODEV;
 
-	clk_frq = edgx_sched_get_hw_clk_frq(ifd_com->iobase);
-	if (!clk_frq)
-		return -ENODEV;
-
 	*psc = kzalloc(sizeof(**psc), GFP_KERNEL);
 	if (!(*psc)) {
 		edgx_br_err(br, "Cannot allocate Common Scheduled Traffic\n");
@@ -222,6 +218,7 @@ int edgx_sched_com_probe(struct edgx_br *br, struct edgx_br_irq *irq,
 	(*psc)->gate_st_msk = (u8)(BIT((*psc)->nr_queues) - 1);
 	/* The last row is reserved for 0 interval entries */
 	(*psc)->max_entry_cnt -= 1U;
+	clk_frq = edgx_sched_get_hw_clk_frq((*psc)->iobase);
 	(*psc)->ns_per_clk = 1000U / clk_frq;
 	(*psc)->max_cyc_time_ns = min(EDGX_SCHED_HW_MAX_CT_NS,
 				      (*psc)->max_entry_cnt *
@@ -1248,6 +1245,9 @@ static ssize_t oper_ctrl_list_len_show(struct device *dev,
 	if (op_tab_idx >= 0) {
 		row_cnt = sched->op_tabs[op_tab_idx].list_len;
 		ret = scnprintf(buf, PAGE_SIZE, "%u\n", row_cnt);
+	} else {
+		// no schedule in operation! return 0 as list length
+		ret = scnprintf(buf, PAGE_SIZE, "%u\n", 0);
 	}
 	mutex_unlock(&sched->lock);
 

@@ -233,7 +233,10 @@ void edgx_brfdb_sid_get_smac(struct edgx_brfdb *brfdb, u8 col, u16 row,
 {
 	struct smac_entry e;
 
+	mutex_lock(&brfdb->lock);
 	edgx_brfdb_smac_get(brfdb, col, row, &e);
+	mutex_unlock(&brfdb->lock);
+
 	ether_addr_copy(addr, e.mac);
 	*vid = e.vlan;
 }

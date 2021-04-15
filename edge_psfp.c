@@ -130,7 +130,7 @@ int  edgx_probe_psfp(struct edgx_br *br, struct edgx_psfp **ppsfp)
 		return -EINVAL;
 
 	ifd = edgx_ac_get_if(&ifreq);
-	if (!ifd || !ifd->ptmap)
+	if (!ifd)
 		return -ENODEV;
 
 	psfp = kzalloc(sizeof(**ppsfp), GFP_KERNEL);
